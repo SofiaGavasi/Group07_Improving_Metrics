@@ -14,14 +14,15 @@
 
 ## Files Overview
 
-- `Datasets/unified_dataset_loader.py`: unified loader for MNIST, CIFAR-10, CelebA, and ChestX-ray14 (placeholder for ChestX-ray14 parsing)
+- `Datasets/unified_dataset_loader.py`: unified loader for MNIST, CIFAR-10, CelebA, and ChestX-ray14
+- `Datasets/chestxray14_dataset.py`: ChestX-ray14 dataset indexing/loading via kagglehub + local split metadata
 - `Models/generation.py`: single `generate_samples(model, n, ...)` interface across models
 - `Models/wgangp.py`: WGAN-GP architecture/training utility skeleton (TODO placeholders)
 - `Models/pretrained_wrappers.py`: wrapper skeletons for StudioGAN, DDPM/DDIM, and StyleGAN2 checkpoints
 - `Metrics/compute_all.py`: wrapper that runs all metric functions and returns a unified results dictionary
 - `Scripts/download_preprocess_mnist_cifar10.py`: MNIST and CIFAR-10 download/setup entrypoint
 - `Scripts/download_preprocess_celeba.py`: CelebA download/setup entrypoint
-- `Scripts/download_preprocess_chestxray14.py`: ChestX-ray14 folder-structure setup entrypoint
+- `Scripts/download_preprocess_chestxray14.py`: ChestX-ray14 download/index setup entrypoint
 - `Scripts/download_pretrained_studiogan_cifar10.py`: checkpoint staging entrypoint for StudioGAN (CIFAR-10)
 - `Scripts/download_pretrained_ddpm_cifar10.py`: checkpoint staging entrypoint for DDPM (CIFAR-10)
 - `Scripts/download_pretrained_stylegan_celeba.py`: checkpoint staging entrypoint for StyleGAN/StyleGAN2 (CelebA)
@@ -38,8 +39,6 @@ I put examples on how to run each in each of these test files in the comments in
 
 ## Open TODOs
 
-- `Datasets/unified_dataset_loader.py`: finish ChestX-ray14 part
-
 - `Models/wgangp.py`: replace placeholder WGAN-GP generator architecture with final architecture. implement `WGANGPGenerator.forward`. replace placeholder WGAN-GP critic architecture with final architecture. implement `WGANGPCritic.forward`.  implement WGAN-GP `gradient_penalty`
 
 - `Models/pretrained_wrappers.py`: load StudioGAN generator from checkpoint,  implement `StudioGANWrapper.sample`
@@ -54,7 +53,6 @@ I put examples on how to run each in each of these test files in the comments in
 
 - `Scripts/download_preprocess_mnist_cifar10.py`: add project-specific preprocessing/export steps (cached tensors, stats, splits).
 - `Scripts/download_preprocess_celeba.py`: decide aligned vs unaligned variant and exact split policy, verify CelebA download endpoint/access requirements in target runtime
-- `Scripts/download_preprocess_chestxray14.py`: add authenticated ChestX-ray14 download and verification, add preprocessing that generates train/val/test files
 - `Scripts/download_pretrained_studiogan_cifar10.py`: add concrete StudioGAN checkpoint URLs and download logic,  add verification and extraction logic
 - `Scripts/download_pretrained_ddpm_cifar10.py`: add DDPM checkpoint download logic, add DDIM sampler config and checkpoint compatibility checks
 - `Scripts/download_pretrained_stylegan_celeba.py`: add StyleGAN/StyleGAN2 checkpoint download logic,  add checkpoint conversion when source format differs from wrapper runtime

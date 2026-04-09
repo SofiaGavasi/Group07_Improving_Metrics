@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional
 
-from torch.utils.data import Dataset
 from torchvision import datasets, transforms
 
 # here we define the loader settings. name will be the name string (see below). data_root is the path to the dataset. 
@@ -58,9 +55,17 @@ class UnifiedDatasetLoader:
             )
         
         if self.dataset_name == "chestxray14":
-            #TODO: this is a placeholder, we should replace it with the actual path to the chest x-ray dataset
-            #  the dataset should be organized in a way that ImageFolder can read 
-            chest_root = Path(self.config.data_root) / "chestxray14"
+            from .chestxray14_dataset import ChestXray14Dataset
+
+            split = "train" if train else "test"
+            return ChestXray14Dataset(
+                root=self.config.data_root,
+                split=split,
+                transform=transform,
+                download=download,
+            )
+
+        raise ValueError("Unsupported dataset")
 
 
 

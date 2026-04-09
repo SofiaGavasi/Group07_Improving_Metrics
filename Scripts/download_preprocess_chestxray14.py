@@ -3,22 +3,32 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from Datasets.chestxray14_dataset import prepare_chestxray14_dataset
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Prepare ChestX-ray14 directory structure.")
+    parser = argparse.ArgumentParser(description="Download and index ChestX-ray14.")
     parser.add_argument("--data-root", type=str, default="data", help="Dataset root folder.")
+    parser.add_argument(
+        "--no-download",
+        action="store_true",
+        help="Skip download and only build index from already available files.",
+    )
     args = parser.parse_args()
 
-    # TODO: implement actual download/preprocessing steps. 
-    
-    chest_root = Path(args.data_root) / "ChestXray14"
-    chest_root.mkdir(parents=True, exist_ok=True)
-    (chest_root / "images").mkdir(parents=True, exist_ok=True)
-    (chest_root / "metadata").mkdir(parents=True, exist_ok=True)
+    index_path = prepare_chestxray14_dataset(
+        data_root=args.data_root,
+        download=not args.no_download,
+    )
 
-    print(f"Created placeholder structure under: {chest_root}")
+    print(f"ChestX-ray14 setup completed. Index created at: {index_path}")
 
 
 if __name__ == "__main__":

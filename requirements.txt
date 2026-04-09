@@ -1,6 +1,7 @@
 torch
 torchvision
 numpy
+pandas
 scipy
 scikit-learn
 clean-fid
@@ -8,3 +9,5 @@ matplotlib
 pillow
 jupyter
 pytest
+kagglehub[pandas-datasets]
+gdown
