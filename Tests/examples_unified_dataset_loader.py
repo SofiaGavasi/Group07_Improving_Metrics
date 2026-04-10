@@ -12,6 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from Datasets.dataset_subset import DatasetSubsetConfig, parse_class_identifiers
 from Datasets.unified_dataset_loader import DatasetConfig, UnifiedDatasetLoader, make_default_loader
 
 # we firts try to load the datasets without downloading, and if that fails we attempt to download/setup the dataset
@@ -50,6 +51,24 @@ def example_cifar10():
     print("CIFAR10:", len(train_ds), len(test_ds))
 
 
+def example_cifar10_subset():
+    # example subset: 20% of train/test, class-balanced, while dropping class index 0.
+    subset = DatasetSubsetConfig(
+        fraction=0.2,
+        strategy="class_balanced",
+        seed=10,
+        drop_classes=parse_class_identifiers("0"),
+    )
+    loader = make_default_loader(
+        dataset_name="cifar10",
+        data_root="data/CIFAR10",
+        image_size=32,
+        subset_config=subset,
+    )
+    train_ds, test_ds = load_train_test_with_fallback(loader, "CIFAR10 subset")
+    print("CIFAR10 subset:", len(train_ds), len(test_ds))
+
+
 def example_celeba():
     loader = make_default_loader(
         dataset_name="celeba",
@@ -71,7 +90,8 @@ def example_chestxray14():
 
 
 if __name__ == "__main__":
-    #example_mnist()
+    example_mnist()
     example_cifar10()
+    # example_cifar10_subset()
     example_celeba()
-    #example_chestxray14()
+    example_chestxray14()

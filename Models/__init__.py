@@ -1,9 +1,6 @@
-from .dcgan import Generator as DCGANGenerator
-from .dcgan import Discriminator as DCGANDiscriminator
-from .generation import generate_samples
+from .dcgan import DCGANDiscriminator, DCGANGenerator
 
 __all__ = [
     "DCGANGenerator",
     "DCGANDiscriminator",
-    "generate_samples",
 ]

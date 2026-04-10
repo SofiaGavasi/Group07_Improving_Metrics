@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Optional
 
 from torchvision import datasets, transforms
+
+from .dataset_subset import DatasetSubsetConfig, apply_dataset_subset
 
 # here we define the loader settings. name will be the name string (see below). data_root is the path to the dataset. 
 # image_size is the size to which all images will be resized. normalize_to_neg_one_one indicates whether to normalize pixel values to [-1, 1] range.
@@ -12,6 +15,7 @@ class DatasetConfig:
     data_root: str
     image_size: int = 32
     normalize_to_neg_one_one: bool = True
+    subset_config: Optional[DatasetSubsetConfig] = None
 
 
 class UnifiedDatasetLoader:
@@ -27,26 +31,27 @@ class UnifiedDatasetLoader:
     def get_dataset(self, train = True, download= False):
         # here we build the transform pipeline based on the configuration.
         transform = self.build_transform()
+        dataset = None
 
         if self.dataset_name == "mnist":
-            return datasets.MNIST(
+            dataset = datasets.MNIST(
                 root=self.config.data_root,
                 train=train,
                 transform=transform,
                 download=download,
             )
 
-        if self.dataset_name == "cifar10":
-            return datasets.CIFAR10(
+        elif self.dataset_name == "cifar10":
+            dataset = datasets.CIFAR10(
                 root=self.config.data_root,
                 train=train,
                 transform=transform,
                 download=download,
             )
 
-        if self.dataset_name == "celeba":
+        elif self.dataset_name == "celeba":
             split = "train" if train else "test"
-            return datasets.CelebA(
+            dataset = datasets.CelebA(
                 root=self.config.data_root,
                 split=split,
                 target_type="attr",
@@ -54,18 +59,25 @@ class UnifiedDatasetLoader:
                 download=download,
             )
         
-        if self.dataset_name == "chestxray14":
+        elif self.dataset_name == "chestxray14":
             from .chestxray14_dataset import ChestXray14Dataset
 
             split = "train" if train else "test"
-            return ChestXray14Dataset(
+            dataset = ChestXray14Dataset(
                 root=self.config.data_root,
                 split=split,
                 transform=transform,
                 download=download,
             )
 
-        raise ValueError("Unsupported dataset")
+        if dataset is None:
+            raise ValueError("Unsupported dataset")
+
+        return apply_dataset_subset(
+            dataset,
+            config=self.config.subset_config,
+            dataset_name=self.dataset_name,
+        )
 
 
 
@@ -94,7 +106,12 @@ class UnifiedDatasetLoader:
 
 
 
-def make_default_loader(  dataset_name, data_root, image_size= None,):
+def make_default_loader(dataset_name, data_root, image_size=None, subset_config=None):
     size = 32 if image_size is None else image_size
-    config = DatasetConfig(name=dataset_name, data_root=data_root, image_size=size)
+    config = DatasetConfig(
+        name=dataset_name,
+        data_root=data_root,
+        image_size=size,
+        subset_config=subset_config,
+    )
     return UnifiedDatasetLoader(config)

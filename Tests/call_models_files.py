@@ -14,7 +14,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from Models import DCGANDiscriminator, DCGANGenerator, generate_samples
+from Models import DCGANDiscriminator, DCGANGenerator
 from Models.pretrained_wrappers import DDPMWrapper, StudioGANWrapper, StyleGAN2Wrapper
 from Models.wgangp import WGANGPCritic, WGANGPGenerator, gradient_penalty
 
@@ -31,13 +31,6 @@ def call_dcgan_module():
     score = dis(fake)
     print(f"Generator output shape: {tuple(fake.shape)}")
     print(f"Discriminator output shape: {tuple(score.shape)}")
-
-
-def call_generation_module():
-    print("\n[Models/generation.py]")
-    gen = DCGANGenerator(ngpu=0)
-    samples = generate_samples(gen, n=4, device=torch.device("cpu"), latent_dim=100)
-    print(f"generate_samples output shape: {tuple(samples.shape)}")
 
 
 def call_wgangp_module():
@@ -83,7 +76,6 @@ def call_pretrained_wrappers_module():
 
 def main():
     call_dcgan_module()
-    #call_generation_module()
     #call_wgangp_module()
     #call_pretrained_wrappers_module()
 

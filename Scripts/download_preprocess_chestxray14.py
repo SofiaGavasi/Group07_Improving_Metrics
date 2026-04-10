@@ -15,11 +15,10 @@ from Datasets.chestxray14_dataset import prepare_chestxray14_dataset
 
 def main():
     parser = argparse.ArgumentParser(description="Download and index ChestX-ray14.")
-    parser.add_argument("--data-root", type=str, default="data", help="Dataset root folder.")
+    parser.add_argument("--data-root", type=str, default="data")
     parser.add_argument(
         "--no-download",
-        action="store_true",
-        help="Skip download and only build index from already available files.",
+        action="store_true"
     )
     args = parser.parse_args()
 
