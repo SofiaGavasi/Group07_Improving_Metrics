@@ -26,7 +26,7 @@ PROFILE = "test"
 # example: ["prep_mnist_cifar10", "train_dcgan_cifar10", "smoke_models"]
 # use this when you want exact step-level control for debugging
 #CUSTOM_STEPS: list[str] = ["test_stylegan2_celeba"]
-CUSTOM_STEPS = [ "test_dcgan_cifar10"]
+CUSTOM_STEPS = ["test_stylegan2_celeba"]
 
 
 """
