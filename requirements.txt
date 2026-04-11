@@ -11,3 +11,5 @@ jupyter
 pytest
 kagglehub[pandas-datasets]
 gdown
+torchmetrics
+torchmetrics[image]
