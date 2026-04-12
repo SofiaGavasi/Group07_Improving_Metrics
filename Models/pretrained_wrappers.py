@@ -37,13 +37,135 @@ class StudioGANWrapper:
 ####################################################################################################################
 
 class DDPMWrapper:
-    def __init__(self, checkpoint_path: str):
-        self.checkpoint_path = Path(checkpoint_path)
-        # TODO: load DDPM model from checkpoint
-    def sample(self, n: int, device: torch.device, **kwargs: Any):
-        # TODO: add DDIM sampling path
-        raise NotImplementedError("TODO: DDPMWrapper.sample")
+    """
+    Wrapper for unconditional CIFAR-10 diffusion checkpoints stored in diffusers format.
 
+    checkpoint_path should point to a local directory like:
+        checkpoints/DDPM/CIFAR10
+    """
+
+    def __init__(
+        self,
+        checkpoint_path: str,
+        pipeline_type: str = "ddpm",
+        torch_dtype: torch.dtype | None = None,
+    ):
+        self.checkpoint_path = Path(checkpoint_path)
+        self.pipeline_type = pipeline_type.lower()
+        self.torch_dtype = torch_dtype
+        self.pipeline = self._load_pipeline()
+        self._current_device = torch.device("cpu")
+
+    def _load_pipeline(self):
+        try:
+            from diffusers import DDPMPipeline, DDIMPipeline
+        except ImportError as exc:
+            raise ImportError(
+                "diffusers is required for DDPM/DDIM wrappers. "
+                "Install with: pip install diffusers"
+            ) from exc
+
+        if not self.checkpoint_path.exists():
+            raise FileNotFoundError(
+                f"Diffusion checkpoint directory not found: {self.checkpoint_path}"
+            )
+
+        load_kwargs: dict[str, Any] = {}
+        if self.torch_dtype is not None:
+            load_kwargs["torch_dtype"] = self.torch_dtype
+
+        if self.pipeline_type == "ddpm":
+            return DDPMPipeline.from_pretrained(str(self.checkpoint_path), **load_kwargs)
+
+        if self.pipeline_type == "ddim":
+            return DDIMPipeline.from_pretrained(str(self.checkpoint_path), **load_kwargs)
+
+        raise ValueError("pipeline_type must be 'ddpm' or 'ddim'")
+
+    @staticmethod
+    def _output_to_tensor(images: Any) -> torch.Tensor:
+        import numpy as np
+
+        if isinstance(images, torch.Tensor):
+            if images.ndim != 4:
+                raise ValueError(
+                    f"Expected tensor output with shape [N,C,H,W], got {tuple(images.shape)}"
+                )
+            return images.clamp(-1.0, 1.0).detach().cpu()
+
+        if isinstance(images, list):
+            arr = np.stack(
+                [np.asarray(img, dtype=np.float32) / 255.0 for img in images],
+                axis=0,
+            )
+        else:
+            arr = np.asarray(images, dtype=np.float32)
+            if arr.ndim != 4:
+                raise ValueError(
+                    f"Expected array output with shape [N,H,W,C], got {arr.shape}"
+                )
+            if arr.max() > 1.0:
+                arr = arr / 255.0
+
+        tensor = torch.from_numpy(arr).permute(0, 3, 1, 2).contiguous()
+        tensor = tensor * 2.0 - 1.0
+        return tensor.clamp(-1.0, 1.0)
+
+    def sample(self, n: int, device: torch.device, **kwargs: Any):
+        """
+        kwargs:
+            num_inference_steps: int
+            seed: int
+            output_type: "np" or "pil"
+        """
+        if n <= 0:
+            raise ValueError("n must be a positive integer.")
+
+        if self._current_device != device:
+            self.pipeline.to(device)
+            self._current_device = device
+
+        seed = kwargs.get("seed", None)
+        output_type = str(kwargs.get("output_type", "np"))
+        default_steps = 1000 if self.pipeline_type == "ddpm" else 50
+        num_inference_steps = int(kwargs.get("num_inference_steps", default_steps))
+
+        generator = None
+        if seed is not None:
+            generator = torch.Generator(device=device)
+            generator.manual_seed(int(seed))
+
+        with torch.no_grad():
+            result = self.pipeline(
+                batch_size=n,
+                num_inference_steps=num_inference_steps,
+                generator=generator,
+                output_type=output_type,
+            )
+
+        if hasattr(result, "images"):
+            images = result.images
+        elif isinstance(result, dict) and "images" in result:
+            images = result["images"]
+        elif isinstance(result, dict) and "sample" in result:
+            images = result["sample"]
+        else:
+            raise ValueError("Unexpected diffusers pipeline output format.")
+
+        return self._output_to_tensor(images)
+
+
+class DDIMWrapper(DDPMWrapper):
+    def __init__(
+        self,
+        checkpoint_path: str,
+        torch_dtype: torch.dtype | None = None,
+    ):
+        super().__init__(
+            checkpoint_path=checkpoint_path,
+            pipeline_type="ddim",
+            torch_dtype=torch_dtype,
+        )
 
 
 
