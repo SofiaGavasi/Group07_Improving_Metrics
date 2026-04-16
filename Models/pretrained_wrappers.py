@@ -13,22 +13,80 @@ import torch.nn as nn
 
 
 
-
 class StudioGANWrapper:
-    def __init__(self, checkpoint_path: str):
-        self.checkpoint_path = Path(checkpoint_path)
-        # TODO: load StudioGAN generator from checkpoint
+    sys.path.append("checkpoints/StudioGAN/CIFAR10/studioGAN_src/src")
+    def __init__(self, repo_path, ckpt_path, config_name="SNGAN.yaml", device="cpu", logger=None):
+        self.repo_path = Path(repo_path)
+        self.ckpt_path = Path(ckpt_path)
+        
+        if device == "cuda" or (isinstance(device, torch.device) and device.type == "cuda"):
+            self.device = torch.device("cuda:0")
+            model_device = 0 
+        else:
+            self.device = torch.device("cpu")
+            model_device = self.device
 
-    def sample(self, n: int, device: torch.device, **kwargs: Any):
-        # TODO: implement StudioGAN sampling
-        raise NotImplementedError("TODO: StudioGANWrapper.sample")
+        self.logger = logger
 
+        # path
+        src_path = self.repo_path / "src"
+        if str(src_path) not in sys.path:
+            sys.path.insert(0, str(src_path))
 
+        from config import Configurations
+        from models.model import load_generator_discriminator
 
+        # more about paths
+        cfg_file_path = src_path / "configs" / "CIFAR10" / config_name
+        if not cfg_file_path.exists():
+            raise FileNotFoundError(f"Config not found at: {cfg_file_path}")
+            
+        self.studiogan_cfg = Configurations(str(cfg_file_path))
 
+        # it gave error otherwise
+        self.studiogan_cfg.MODEL.g_conv_dim = 96
+        self.studiogan_cfg.MODEL.d_conv_dim = 96
+        
+        # attributes handling
+        if not hasattr(self.studiogan_cfg.RUN, "mixed_precision"):
+            self.studiogan_cfg.RUN.mixed_precision = False
+        if not hasattr(self.studiogan_cfg.RUN, "train"):
+            self.studiogan_cfg.RUN.train = False
 
+        # loading the discriminator
+        self.G, _, _, _, _, _, _, _ = load_generator_discriminator(
+            self.studiogan_cfg.DATA,
+            self.studiogan_cfg.OPTIMIZATION,
+            self.studiogan_cfg.MODEL,
+            self.studiogan_cfg.STYLEGAN,
+            self.studiogan_cfg.MODULES,
+            self.studiogan_cfg.RUN,
+            model_device,
+            self.logger
+        )
 
+        # loading weights
+        checkpoint = torch.load(self.ckpt_path, map_location="cpu")
+        
+        # choosing ema weights
+        if isinstance(checkpoint, dict):
+            state_dict = checkpoint.get("generator_ema", checkpoint.get("state_dict", checkpoint))
+        else:
+            state_dict = checkpoint
 
+        self.G.load_state_dict(state_dict, strict=False)
+        self.G.to(self.device)
+        self.G.eval()
+
+    @torch.no_grad()
+    def sample(self, n):
+        z_dim = self.studiogan_cfg.MODEL.z_dim
+        z = torch.randn(n, z_dim, device=self.device)
+        # generates random class labels if needed
+        y = torch.randint(0, self.studiogan_cfg.DATA.num_classes, (n,), device=self.device)
+        
+        # since SNGAN with cBN expects (z, y), both images and labels
+        return self.G(z, y)
 
 
 
