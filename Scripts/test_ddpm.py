@@ -1,0 +1,238 @@
+# example:
+# py Scripts/test_ddpm.py --checkpoint checkpoints/DDPM/CIFAR10 --mode ddpm --out-dir outputs/ddpm_test
+# py Scripts/test_ddpm.py --checkpoint checkpoints/DDPM/CIFAR10 --mode ddim --out-dir outputs/ddim_test
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+import numpy as np
+import torch
+from torch.utils.data import DataLoader
+from torchvision.utils import save_image
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from Models.pretrained_wrappers import DDPMWrapper, DDIMWrapper
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Generate samples from a pretrained DDPM/DDIM checkpoint.")
+    parser.add_argument("--checkpoint", type=str, default="checkpoints/DDPM/CIFAR10")
+    parser.add_argument("--mode", type=str, default="ddpm", choices=["ddpm", "ddim"])
+    parser.add_argument("--out-dir", type=str, default="outputs/ddpm_test")
+    parser.add_argument("--num-samples", type=int, default=64)
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--num-inference-steps", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--cuda", action="store_true")
+    parser.add_argument(
+        "--eval-metrics",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="If enabled, compute metrics with Metrics/compute_all.py and save JSON report.",
+    )
+    parser.add_argument(
+        "--metrics-dataset",
+        type=str,
+        default="cifar10",
+        choices=["mnist", "cifar10", "celeba", "chestxray14"],
+        help="Dataset used as real reference distribution during metric evaluation.",
+    )
+    parser.add_argument(
+        "--metrics-data-root",
+        type=str,
+        default="data/CIFAR10",
+        help="Data root for metrics real samples.",
+    )
+    parser.add_argument("--metrics-image-size", type=int, default=32)
+    parser.add_argument("--metrics-samples", type=int, default=64)
+    parser.add_argument(
+        "--metrics-download-if-missing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Allow dataset download/setup fallback during metric evaluation if files are missing.",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail on errors instead of skipping.",
+    )
+    return parser.parse_args()
+
+
+def _load_real_samples(
+    dataset_name: str,
+    data_root: str,
+    image_size: int,
+    sample_count: int,
+    download_if_missing: bool,
+):
+    from Datasets.unified_dataset_loader import make_default_loader
+
+    loader = make_default_loader(
+        dataset_name=dataset_name,
+        data_root=data_root,
+        image_size=image_size,
+    )
+
+    try:
+        dataset = loader.get_dataset(train=False, download=False)
+    except (FileNotFoundError, RuntimeError):
+        if not download_if_missing:
+            raise
+        dataset = loader.get_dataset(train=False, download=True)
+
+    dataloader = DataLoader(
+        dataset,
+        batch_size=min(128, sample_count),
+        shuffle=True,
+        num_workers=0,
+    )
+
+    batches: list[torch.Tensor] = []
+    total = 0
+    for images, _ in dataloader:
+        batches.append(images)
+        total += int(images.shape[0])
+        if total >= sample_count:
+            break
+
+    if not batches:
+        raise ValueError("Could not load real samples for metrics.")
+    return torch.cat(batches, dim=0)[:sample_count]
+
+
+def _to_feature_matrix(samples: torch.Tensor) -> np.ndarray:
+    return (
+        samples.detach()
+        .cpu()
+        .float()
+        .reshape(samples.shape[0], -1)
+        .numpy()
+        .astype(np.float64, copy=False)
+    )
+
+
+def _evaluate_and_save_metrics(
+    real_samples: torch.Tensor,
+    fake_samples: torch.Tensor,
+    out_dir: Path,
+):
+    from Metrics.compute_all import compute_all_metrics
+
+    paired_count = min(int(real_samples.shape[0]), int(fake_samples.shape[0]))
+    if paired_count < 4:
+        raise ValueError("Need at least 4 paired real/fake samples to compute metrics robustly.")
+
+    real_features = _to_feature_matrix(real_samples[:paired_count])
+    fake_features = _to_feature_matrix(fake_samples[:paired_count])
+
+    results = compute_all_metrics(real_features, fake_features)
+    metrics_path = out_dir / "metrics_report.json"
+    metrics_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
+    print(f"Saved metric report to {metrics_path}")
+    return results
+
+
+def _generate_in_batches(
+    wrapper,
+    total_samples: int,
+    batch_size: int,
+    device: torch.device,
+    num_inference_steps: int | None,
+    seed: int | None,
+):
+    samples: list[torch.Tensor] = []
+    remaining = total_samples
+    offset = 0
+
+    while remaining > 0:
+        this_batch = min(batch_size, remaining)
+        batch_seed = None if seed is None else int(seed + offset)
+
+        kwargs = {"seed": batch_seed}
+        if num_inference_steps is not None:
+            kwargs["num_inference_steps"] = int(num_inference_steps)
+
+        generated = wrapper.sample(
+            this_batch,
+            device=device,
+            **kwargs,
+        )
+        samples.append(generated)
+        remaining -= this_batch
+        offset += this_batch
+
+    return torch.cat(samples, dim=0)
+
+
+def main():
+    args = parse_args()
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    device = torch.device("cuda:0" if args.cuda and torch.cuda.is_available() else "cpu")
+    checkpoint = Path(args.checkpoint)
+
+    if not checkpoint.exists():
+        message = f"{args.mode.upper()} test skipped: checkpoint not found at {checkpoint}"
+        if args.strict:
+            raise FileNotFoundError(message)
+        print(message)
+        return
+
+    wrapper_cls = DDPMWrapper if args.mode == "ddpm" else DDIMWrapper
+
+    try:
+        wrapper = wrapper_cls(checkpoint_path=str(checkpoint))
+        samples = _generate_in_batches(
+            wrapper=wrapper,
+            total_samples=args.num_samples,
+            batch_size=max(1, args.batch_size),
+            device=device,
+            num_inference_steps=args.num_inference_steps,
+            seed=args.seed,
+        )
+    except Exception as exc:
+        print(f"{args.mode.upper()} test failed: {exc}")
+        if args.strict:
+            raise SystemExit(1)
+        return
+
+    output_path = out_dir / "generated_samples.png"
+    save_image(samples, output_path, nrow=8, normalize=True)
+    print(f"Saved {samples.shape[0]} samples to {output_path}")
+
+    if args.eval_metrics:
+        try:
+            metric_image_size = args.metrics_image_size
+            if int(samples.shape[-1]) == int(samples.shape[-2]):
+                metric_image_size = int(samples.shape[-1])
+
+            real_samples = _load_real_samples(
+                dataset_name=args.metrics_dataset,
+                data_root=args.metrics_data_root,
+                image_size=metric_image_size,
+                sample_count=args.metrics_samples,
+                download_if_missing=args.metrics_download_if_missing,
+            )
+            metrics = _evaluate_and_save_metrics(
+                real_samples=real_samples,
+                fake_samples=samples,
+                out_dir=out_dir,
+            )
+            print(f"Metric summary keys: {list(metrics.keys())}")
+        except Exception as exc:
+            if args.strict:
+                raise
+            print(f"Metric evaluation skipped/failed: {exc}")
+
+
+if __name__ == "__main__":
+    main()

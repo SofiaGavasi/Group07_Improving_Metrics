@@ -13,22 +13,80 @@ import torch.nn as nn
 
 
 
-
 class StudioGANWrapper:
-    def __init__(self, checkpoint_path: str):
-        self.checkpoint_path = Path(checkpoint_path)
-        # TODO: load StudioGAN generator from checkpoint
+    sys.path.append("checkpoints/StudioGAN/CIFAR10/studioGAN_src/src")
+    def __init__(self, repo_path, ckpt_path, config_name="SNGAN.yaml", device="cpu", logger=None):
+        self.repo_path = Path(repo_path)
+        self.ckpt_path = Path(ckpt_path)
+        
+        if device == "cuda" or (isinstance(device, torch.device) and device.type == "cuda"):
+            self.device = torch.device("cuda:0")
+            model_device = 0 
+        else:
+            self.device = torch.device("cpu")
+            model_device = self.device
 
-    def sample(self, n: int, device: torch.device, **kwargs: Any):
-        # TODO: implement StudioGAN sampling
-        raise NotImplementedError("TODO: StudioGANWrapper.sample")
+        self.logger = logger
 
+        # path
+        src_path = self.repo_path / "src"
+        if str(src_path) not in sys.path:
+            sys.path.insert(0, str(src_path))
 
+        from config import Configurations
+        from models.model import load_generator_discriminator
 
+        # more about paths
+        cfg_file_path = src_path / "configs" / "CIFAR10" / config_name
+        if not cfg_file_path.exists():
+            raise FileNotFoundError(f"Config not found at: {cfg_file_path}")
+            
+        self.studiogan_cfg = Configurations(str(cfg_file_path))
 
+        # it gave error otherwise
+        self.studiogan_cfg.MODEL.g_conv_dim = 96
+        self.studiogan_cfg.MODEL.d_conv_dim = 96
+        
+        # attributes handling
+        if not hasattr(self.studiogan_cfg.RUN, "mixed_precision"):
+            self.studiogan_cfg.RUN.mixed_precision = False
+        if not hasattr(self.studiogan_cfg.RUN, "train"):
+            self.studiogan_cfg.RUN.train = False
 
+        # loading the discriminator
+        self.G, _, _, _, _, _, _, _ = load_generator_discriminator(
+            self.studiogan_cfg.DATA,
+            self.studiogan_cfg.OPTIMIZATION,
+            self.studiogan_cfg.MODEL,
+            self.studiogan_cfg.STYLEGAN,
+            self.studiogan_cfg.MODULES,
+            self.studiogan_cfg.RUN,
+            model_device,
+            self.logger
+        )
 
+        # loading weights
+        checkpoint = torch.load(self.ckpt_path, map_location="cpu")
+        
+        # choosing ema weights
+        if isinstance(checkpoint, dict):
+            state_dict = checkpoint.get("generator_ema", checkpoint.get("state_dict", checkpoint))
+        else:
+            state_dict = checkpoint
 
+        self.G.load_state_dict(state_dict, strict=False)
+        self.G.to(self.device)
+        self.G.eval()
+
+    @torch.no_grad()
+    def sample(self, n):
+        z_dim = self.studiogan_cfg.MODEL.z_dim
+        z = torch.randn(n, z_dim, device=self.device)
+        # generates random class labels if needed
+        y = torch.randint(0, self.studiogan_cfg.DATA.num_classes, (n,), device=self.device)
+        
+        # since SNGAN with cBN expects (z, y), both images and labels
+        return self.G(z, y)
 
 
 
@@ -37,13 +95,135 @@ class StudioGANWrapper:
 ####################################################################################################################
 
 class DDPMWrapper:
-    def __init__(self, checkpoint_path: str):
-        self.checkpoint_path = Path(checkpoint_path)
-        # TODO: load DDPM model from checkpoint
-    def sample(self, n: int, device: torch.device, **kwargs: Any):
-        # TODO: add DDIM sampling path
-        raise NotImplementedError("TODO: DDPMWrapper.sample")
+    """
+    Wrapper for unconditional CIFAR-10 diffusion checkpoints stored in diffusers format.
 
+    checkpoint_path should point to a local directory like:
+        checkpoints/DDPM/CIFAR10
+    """
+
+    def __init__(
+        self,
+        checkpoint_path: str,
+        pipeline_type: str = "ddpm",
+        torch_dtype: torch.dtype | None = None,
+    ):
+        self.checkpoint_path = Path(checkpoint_path)
+        self.pipeline_type = pipeline_type.lower()
+        self.torch_dtype = torch_dtype
+        self.pipeline = self._load_pipeline()
+        self._current_device = torch.device("cpu")
+
+    def _load_pipeline(self):
+        try:
+            from diffusers import DDPMPipeline, DDIMPipeline
+        except ImportError as exc:
+            raise ImportError(
+                "diffusers is required for DDPM/DDIM wrappers. "
+                "Install with: pip install diffusers"
+            ) from exc
+
+        if not self.checkpoint_path.exists():
+            raise FileNotFoundError(
+                f"Diffusion checkpoint directory not found: {self.checkpoint_path}"
+            )
+
+        load_kwargs: dict[str, Any] = {}
+        if self.torch_dtype is not None:
+            load_kwargs["torch_dtype"] = self.torch_dtype
+
+        if self.pipeline_type == "ddpm":
+            return DDPMPipeline.from_pretrained(str(self.checkpoint_path), **load_kwargs)
+
+        if self.pipeline_type == "ddim":
+            return DDIMPipeline.from_pretrained(str(self.checkpoint_path), **load_kwargs)
+
+        raise ValueError("pipeline_type must be 'ddpm' or 'ddim'")
+
+    @staticmethod
+    def _output_to_tensor(images: Any) -> torch.Tensor:
+        import numpy as np
+
+        if isinstance(images, torch.Tensor):
+            if images.ndim != 4:
+                raise ValueError(
+                    f"Expected tensor output with shape [N,C,H,W], got {tuple(images.shape)}"
+                )
+            return images.clamp(-1.0, 1.0).detach().cpu()
+
+        if isinstance(images, list):
+            arr = np.stack(
+                [np.asarray(img, dtype=np.float32) / 255.0 for img in images],
+                axis=0,
+            )
+        else:
+            arr = np.asarray(images, dtype=np.float32)
+            if arr.ndim != 4:
+                raise ValueError(
+                    f"Expected array output with shape [N,H,W,C], got {arr.shape}"
+                )
+            if arr.max() > 1.0:
+                arr = arr / 255.0
+
+        tensor = torch.from_numpy(arr).permute(0, 3, 1, 2).contiguous()
+        tensor = tensor * 2.0 - 1.0
+        return tensor.clamp(-1.0, 1.0)
+
+    def sample(self, n: int, device: torch.device, **kwargs: Any):
+        """
+        kwargs:
+            num_inference_steps: int
+            seed: int
+            output_type: "np" or "pil"
+        """
+        if n <= 0:
+            raise ValueError("n must be a positive integer.")
+
+        if self._current_device != device:
+            self.pipeline.to(device)
+            self._current_device = device
+
+        seed = kwargs.get("seed", None)
+        output_type = str(kwargs.get("output_type", "np"))
+        default_steps = 1000 if self.pipeline_type == "ddpm" else 50
+        num_inference_steps = int(kwargs.get("num_inference_steps", default_steps))
+
+        generator = None
+        if seed is not None:
+            generator = torch.Generator(device=device)
+            generator.manual_seed(int(seed))
+
+        with torch.no_grad():
+            result = self.pipeline(
+                batch_size=n,
+                num_inference_steps=num_inference_steps,
+                generator=generator,
+                output_type=output_type,
+            )
+
+        if hasattr(result, "images"):
+            images = result.images
+        elif isinstance(result, dict) and "images" in result:
+            images = result["images"]
+        elif isinstance(result, dict) and "sample" in result:
+            images = result["sample"]
+        else:
+            raise ValueError("Unexpected diffusers pipeline output format.")
+
+        return self._output_to_tensor(images)
+
+
+class DDIMWrapper(DDPMWrapper):
+    def __init__(
+        self,
+        checkpoint_path: str,
+        torch_dtype: torch.dtype | None = None,
+    ):
+        super().__init__(
+            checkpoint_path=checkpoint_path,
+            pipeline_type="ddim",
+            torch_dtype=torch_dtype,
+        )
 
 
 
