@@ -19,12 +19,15 @@ def compute_all_metrics(real_samples: Any, fake_samples: Any):
     except Exception as exc:
         results["fid"] = {"error": str(exc), "todo": "validate feature extraction pipeline"}
 
-    for key, fn in [
-        ("is", compute_inception_score),
+    # IS is based on generated samples only, while the others compare real vs fake.
+    metric_calls = [
+        ("is", lambda real, fake: compute_inception_score(fake)),
         ("kid", compute_kid),
         ("precision_recall", compute_precision_recall),
         ("density_coverage", compute_density_coverage),
-    ]:
+    ]
+
+    for key, fn in metric_calls:
         try:
             results[key] = fn(real_samples, fake_samples)
         except NotImplementedError as exc:

@@ -184,6 +184,7 @@ def step_test_dcgan_cifar10(args: argparse.Namespace):
             cmd.append("--metrics-download-if-missing")
     if args.cuda:
         cmd.append("--cuda")
+    append_perturbation_args(cmd, args)
     if args.strict_tests:
         cmd.append("--strict")
     return cmd
@@ -256,6 +257,7 @@ def step_test_ddpm_cifar10(args: argparse.Namespace):
     ]
     if args.cuda:
         cmd.append("--cuda")
+    append_perturbation_args(cmd, args)
     if args.strict_tests:
         cmd.append("--strict")
     return cmd
@@ -291,6 +293,7 @@ def step_test_stylegan2_celeba(args: argparse.Namespace):
             cmd.append("--metrics-download-if-missing")
     if args.cuda:
         cmd.append("--cuda")
+    append_perturbation_args(cmd, args)
     if args.strict_tests:
         cmd.append("--strict")
     return cmd
@@ -307,6 +310,60 @@ def append_subset_args(cmd: list[str], args: argparse.Namespace):
         cmd.extend(["--subset-include-classes", args.subset_include_classes.strip()])
     if args.subset_drop_classes.strip():
         cmd.extend(["--subset-drop-classes", args.subset_drop_classes.strip()])
+
+
+def _perturbations_enabled(args: argparse.Namespace) -> bool:
+    return bool(
+        args.use_perturbations
+        or args.perturb_degrade
+        or args.perturb_memoisation
+        or args.perturb_class_removal
+    )
+
+
+def append_perturbation_args(cmd: list[str], args: argparse.Namespace):
+    if not _perturbations_enabled(args):
+        return
+
+    cmd.append("--use-perturbations")
+    cmd.extend(["--perturb-apply-to", args.perturb_apply_to])
+
+    if args.perturb_degrade:
+        cmd.append("--perturb-degrade")
+        cmd.extend(["--perturb-degrade-severity", str(args.perturb_degrade_severity)])
+        if args.perturb_degrade_gaussian_noise:
+            cmd.append("--perturb-degrade-gaussian-noise")
+        if args.perturb_degrade_gaussian_blur:
+            cmd.append("--perturb-degrade-gaussian-blur")
+        if args.perturb_degrade_jpeg_compression:
+            cmd.append("--perturb-degrade-jpeg-compression")
+
+    if args.perturb_memoisation:
+        cmd.append("--perturb-memoisation")
+        cmd.extend(["--perturb-memo-fraction", str(args.perturb_memo_fraction)])
+        cmd.extend(["--perturb-memo-seed", str(args.perturb_memo_seed)])
+    if args.perturb_class_removal:
+        cmd.append("--perturb-class-removal")
+        cmd.extend(["--perturb-class-removal-strategy", args.perturb_class_removal_strategy])
+        cmd.extend(["--perturb-class-removal-targets", args.perturb_class_removal_targets])
+        cmd.extend(["--perturb-class-removal-kmeans-k", str(args.perturb_class_removal_kmeans_k)])
+        if args.perturb_class_removal_kmeans_cache_path.strip():
+            cmd.extend(
+                [
+                    "--perturb-class-removal-kmeans-cache-path",
+                    args.perturb_class_removal_kmeans_cache_path.strip(),
+                ]
+            )
+        if args.perturb_class_removal_kmeans_recreate:
+            cmd.append("--perturb-class-removal-kmeans-recreate")
+        cmd.extend(["--perturb-class-removal-seed", str(args.perturb_class_removal_seed)])
+        cmd.extend(
+            [
+                "--perturb-class-removal-label-threshold",
+                str(args.perturb_class_removal_label_threshold),
+            ]
+        )
+        cmd.extend(["--perturb-class-removal-min-kept", str(args.perturb_class_removal_min_kept)])
 
 
 STEP_BUILDERS: dict[str, StepBuilder] = {
@@ -411,13 +468,88 @@ def parse_args():
         help="Allow real dataset download fallback during metric evaluation.",
     )
     parser.add_argument(
+        "--use-perturbations",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable perturbation wrappers for generated/real samples in compatible test scripts.",
+    )
+    parser.add_argument(
+        "--perturb-apply-to",
+        choices=["fake", "real", "both"],
+        default="fake",
+        help="Which sample set perturbations should target (memoisation/class-removal are fake-only).",
+    )
+    parser.add_argument(
+        "--perturb-degrade",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable degradation perturbation.",
+    )
+    parser.add_argument("--perturb-degrade-severity", type=int, default=1)
+    parser.add_argument(
+        "--perturb-degrade-gaussian-noise",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--perturb-degrade-gaussian-blur",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--perturb-degrade-jpeg-compression",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument(
+        "--perturb-memoisation",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable memoisation perturbation (inject real images into fake samples).",
+    )
+    parser.add_argument("--perturb-memo-fraction", type=float, default=0.1)
+    parser.add_argument("--perturb-memo-seed", type=int, default=10)
+    parser.add_argument(
+        "--perturb-class-removal",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable class-removal perturbation (drop selected fake classes/modes).",
+    )
+    parser.add_argument(
+        "--perturb-class-removal-strategy",
+        choices=["label", "kmeans"],
+        default="label",
+    )
+    parser.add_argument(
+        "--perturb-class-removal-targets",
+        type=str,
+        default="",
+        help="Comma-separated labels/ids or kmeans label-cluster ids to drop.",
+    )
+    parser.add_argument("--perturb-class-removal-kmeans-k", type=int, default=8)
+    parser.add_argument(
+        "--perturb-class-removal-kmeans-cache-path",
+        type=str,
+        default="",
+        help="Optional path to save/reuse kmeans label-cluster assignments.",
+    )
+    parser.add_argument(
+        "--perturb-class-removal-kmeans-recreate",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Ignore existing kmeans cache and rebuild label clusters.",
+    )
+    parser.add_argument("--perturb-class-removal-seed", type=int, default=10)
+    parser.add_argument("--perturb-class-removal-label-threshold", type=float, default=0.0)
+    parser.add_argument("--perturb-class-removal-min-kept", type=int, default=4)
+    parser.add_argument(
         "--strict-tests",
         action="store_true",
         help="Fail test steps when placeholder/TODO test scripts are not fully implemented.",
     )
     parser.add_argument("--subset-fraction", type=float, default=None)
     parser.add_argument("--subset-max-samples", type=int, default=None)
-    parser.add_argument("--subset-seed", type=int, default=42)
+    parser.add_argument("--subset-seed", type=int, default=10)
     parser.add_argument(
         "--subset-strategy",
         choices=["random", "class_balanced"],
@@ -539,6 +671,40 @@ def _subset_config_json(args: argparse.Namespace) -> str:
     return json.dumps(subset, separators=(",", ":"))
 
 
+def _perturbation_config_json_from_cmd(cmd: list[str]) -> str:
+    if "--use-perturbations" not in cmd:
+        return ""
+
+    config = {
+        "use_perturbations": True,
+        "apply_to": _extract_flag_value(cmd, "--perturb-apply-to") or "fake",
+        "degradation": {
+            "enabled": "--perturb-degrade" in cmd,
+            "severity": _extract_flag_value(cmd, "--perturb-degrade-severity") or "1",
+            "gaussian_noise": "--perturb-degrade-gaussian-noise" in cmd,
+            "gaussian_blur": "--perturb-degrade-gaussian-blur" in cmd,
+            "jpeg_compression": "--perturb-degrade-jpeg-compression" in cmd,
+        },
+        "memoisation": {
+            "enabled": "--perturb-memoisation" in cmd,
+            "fraction": _extract_flag_value(cmd, "--perturb-memo-fraction") or "0.1",
+            "seed": _extract_flag_value(cmd, "--perturb-memo-seed") or "10",
+        },
+        "class_removal": {
+            "enabled": "--perturb-class-removal" in cmd,
+            "strategy": _extract_flag_value(cmd, "--perturb-class-removal-strategy") or "label",
+            "targets": _extract_flag_value(cmd, "--perturb-class-removal-targets"),
+            "kmeans_k": _extract_flag_value(cmd, "--perturb-class-removal-kmeans-k") or "8",
+            "kmeans_cache_path": _extract_flag_value(cmd, "--perturb-class-removal-kmeans-cache-path"),
+            "kmeans_recreate": "--perturb-class-removal-kmeans-recreate" in cmd,
+            "seed": _extract_flag_value(cmd, "--perturb-class-removal-seed") or "10",
+            "label_threshold": _extract_flag_value(cmd, "--perturb-class-removal-label-threshold") or "0.0",
+            "min_kept": _extract_flag_value(cmd, "--perturb-class-removal-min-kept") or "4",
+        },
+    }
+    return json.dumps(config, separators=(",", ":"))
+
+
 def _metrics_json_for_out_dir(out_dir: Path, run_started_at: datetime) -> tuple[str, str]:
     metrics_path = out_dir / "metrics_report.json"
     if not metrics_path.exists():
@@ -575,6 +741,7 @@ def append_test_run_csv(
         "weights_path": _weights_for_test_step(step_name, cmd),
         "dataset": _dataset_for_test_step(step_name),
         "subset_config": _subset_config_json(args),
+        "perturbation_config": _perturbation_config_json_from_cmd(cmd),
         "metrics_path": metrics_path,
         "metrics_report_json": metrics_json,
         "exit_code": str(exit_code),

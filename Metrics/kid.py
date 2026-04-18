@@ -26,10 +26,35 @@ def kid(real_features: np.ndarray, fake_features: np.ndarray):
     return float(kid)
 
 def compute_kid(real_features: np.ndarray, fake_features: np.ndarray):
-    KIDs= []
-    for _ in range(100):
-        random_real = np.random.choice(real_features.shape[0], 1000)
-        random_fake = np.random.choice(fake_features.shape[0], 1000)
+    # casting to float32 cuts memory pressure in half for large feature vectors.
+    real_features = np.asarray(real_features, dtype=np.float32)
+    fake_features = np.asarray(fake_features, dtype=np.float32)
+
+    m = int(real_features.shape[0])
+    n = int(fake_features.shape[0])
+    if m < 2 or n < 2:
+        raise ValueError("KID needs at least 2 real and 2 fake samples.")
+
+    feature_dim = int(real_features.shape[1])
+
+    # this keeps sampling stable while avoiding huge temporary arrays.
+    # rough budget: two sampled matrices (real+fake), float32.
+    memory_budget_bytes = 256 * 1024 * 1024
+    max_subset_by_memory = max(
+        2,
+        int(memory_budget_bytes // max(1, feature_dim * 4 * 2)),
+    )
+    subset_size = min(1000, m, n, max_subset_by_memory)
+
+    # if subset is tiny there is no value in many bootstrap rounds.
+    num_rounds = 100 if subset_size >= 16 else 20
+
+    KIDs = []
+    for _ in range(num_rounds):
+        replace_real = m < subset_size
+        replace_fake = n < subset_size
+        random_real = np.random.choice(m, subset_size, replace=replace_real)
+        random_fake = np.random.choice(n, subset_size, replace=replace_fake)
         sampled_kid = kid(real_features[random_real], fake_features[random_fake])
         KIDs.append(sampled_kid)
 

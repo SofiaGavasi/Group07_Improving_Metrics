@@ -123,6 +123,43 @@ METRICS_DOWNLOAD_IF_MISSING = False
 
 
 
+# Perturbation controls (used in compatible test scripts):
+# - USE_PERTURBATIONS or any specific perturbation toggle enables perturbation support
+# - PERTURB_APPLY_TO: "fake", "real", or "both"
+USE_PERTURBATIONS = False
+PERTURB_APPLY_TO = "fake"
+
+# Degradation perturbation:
+PERTURB_DEGRADE = False
+PERTURB_DEGRADE_SEVERITY = 1   # 1..5
+PERTURB_DEGRADE_GAUSSIAN_NOISE = False
+PERTURB_DEGRADE_GAUSSIAN_BLUR = False
+PERTURB_DEGRADE_JPEG_COMPRESSION = False
+
+# Memoisation perturbation:
+PERTURB_MEMOISATION = False
+PERTURB_MEMO_FRACTION = 0.1
+PERTURB_MEMO_SEED = 10
+
+# Class-removal perturbation (mode dropping):
+# - label strategy: drop targets are class names/indices
+# - kmeans strategy: build label co-occurrence clusters, then drop cluster ids
+PERTURB_CLASS_REMOVAL = True
+PERTURB_CLASS_REMOVAL_STRATEGY = "label"   # "label" or "kmeans"
+PERTURB_CLASS_REMOVAL_TARGETS = "Smiling"         # example single-label: "0,1" ; multi-label: "Smiling,Pleural_Thickening" ; kmeans: "2,5"
+PERTURB_CLASS_REMOVAL_KMEANS_K = 8
+# Optional cache path for kmeans label-clusters. Keep empty for default auto-path.
+PERTURB_CLASS_REMOVAL_KMEANS_CACHE_PATH = ""
+# if True, existing kmeans cache is ignored and label clusters are rebuilt
+PERTURB_CLASS_REMOVAL_KMEANS_RECREATE = False
+PERTURB_CLASS_REMOVAL_SEED = 10
+PERTURB_CLASS_REMOVAL_LABEL_THRESHOLD = 0.0
+PERTURB_CLASS_REMOVAL_MIN_KEPT = 4
+
+
+
+
+
 # optional explicit checkpoint overrides for model test scripts
 # keep empty strings to use pipeline defaults based on CHECKPOINTS_ROOT/OUTPUTS_ROOT
 DCGAN_TEST_NETG = ""
@@ -227,6 +264,52 @@ def main():
         cmd.append("--no-eval-metrics")
     if METRICS_DOWNLOAD_IF_MISSING:
         cmd.append("--metrics-download-if-missing")
+
+    perturbations_enabled = bool(
+        USE_PERTURBATIONS
+        or PERTURB_DEGRADE
+        or PERTURB_MEMOISATION
+        or PERTURB_CLASS_REMOVAL
+    )
+    if perturbations_enabled:
+        cmd.append("--use-perturbations")
+        cmd.extend(["--perturb-apply-to", PERTURB_APPLY_TO])
+        if PERTURB_DEGRADE:
+            cmd.append("--perturb-degrade")
+            cmd.extend(["--perturb-degrade-severity", str(PERTURB_DEGRADE_SEVERITY)])
+            if PERTURB_DEGRADE_GAUSSIAN_NOISE:
+                cmd.append("--perturb-degrade-gaussian-noise")
+            if PERTURB_DEGRADE_GAUSSIAN_BLUR:
+                cmd.append("--perturb-degrade-gaussian-blur")
+            if PERTURB_DEGRADE_JPEG_COMPRESSION:
+                cmd.append("--perturb-degrade-jpeg-compression")
+        if PERTURB_MEMOISATION:
+            cmd.append("--perturb-memoisation")
+            cmd.extend(["--perturb-memo-fraction", str(PERTURB_MEMO_FRACTION)])
+            cmd.extend(["--perturb-memo-seed", str(PERTURB_MEMO_SEED)])
+        if PERTURB_CLASS_REMOVAL:
+            cmd.append("--perturb-class-removal")
+            cmd.extend(["--perturb-class-removal-strategy", PERTURB_CLASS_REMOVAL_STRATEGY])
+            cmd.extend(["--perturb-class-removal-targets", PERTURB_CLASS_REMOVAL_TARGETS])
+            cmd.extend(["--perturb-class-removal-kmeans-k", str(PERTURB_CLASS_REMOVAL_KMEANS_K)])
+            if PERTURB_CLASS_REMOVAL_KMEANS_CACHE_PATH.strip():
+                cmd.extend(
+                    [
+                        "--perturb-class-removal-kmeans-cache-path",
+                        PERTURB_CLASS_REMOVAL_KMEANS_CACHE_PATH.strip(),
+                    ]
+                )
+            if PERTURB_CLASS_REMOVAL_KMEANS_RECREATE:
+                cmd.append("--perturb-class-removal-kmeans-recreate")
+            cmd.extend(["--perturb-class-removal-seed", str(PERTURB_CLASS_REMOVAL_SEED)])
+            cmd.extend(
+                [
+                    "--perturb-class-removal-label-threshold",
+                    str(PERTURB_CLASS_REMOVAL_LABEL_THRESHOLD),
+                ]
+            )
+            cmd.extend(["--perturb-class-removal-min-kept", str(PERTURB_CLASS_REMOVAL_MIN_KEPT)])
+
     if CUDA:
         cmd.append("--cuda")
     if STRICT_TESTS:

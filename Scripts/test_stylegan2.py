@@ -17,6 +17,13 @@ if str(REPO_ROOT) not in sys.path:
 
 
 from Models.pretrained_wrappers import StyleGAN2Wrapper
+from Perturbation.pipeline_perturbations import (
+    add_perturbation_args,
+    apply_configured_perturbations,
+    perturbation_needs_real_reference,
+    perturbation_needs_reference_targets,
+    perturbations_enabled,
+)
 
 
 def parse_args():
@@ -62,6 +69,7 @@ def parse_args():
         action="store_true",
         help="Fail on errors (missing checkpoint/loading/sampling) instead of skipping.",
     )
+    add_perturbation_args(parser)
     return parser.parse_args()
 
 
@@ -71,6 +79,35 @@ def _load_real_samples(
     image_size: int,
     sample_count: int,
     download_if_missing: bool,
+):
+    return _load_real_reference(
+        dataset_name=dataset_name,
+        data_root=data_root,
+        image_size=image_size,
+        sample_count=sample_count,
+        download_if_missing=download_if_missing,
+        include_targets=False,
+    )["samples"]
+
+
+def _dataset_class_names(dataset) -> list[str]:
+    # checking common class-name fields used by our loaders/datasets
+    if hasattr(dataset, "classes") and dataset.classes is not None:
+        return [str(name) for name in list(dataset.classes)]
+    if hasattr(dataset, "attr_names") and dataset.attr_names is not None:
+        return [str(name) for name in list(dataset.attr_names)]
+    if hasattr(dataset, "finding_classes") and dataset.finding_classes is not None:
+        return [str(name) for name in list(dataset.finding_classes)]
+    return []
+
+
+def _load_real_reference(
+    dataset_name: str,
+    data_root: str,
+    image_size: int,
+    sample_count: int,
+    download_if_missing: bool,
+    include_targets: bool,
 ):
     from Datasets.unified_dataset_loader import make_default_loader
 
@@ -93,17 +130,29 @@ def _load_real_samples(
         shuffle=True,
         num_workers=0,
     )
-    batches: list[torch.Tensor] = []
+    image_batches: list[torch.Tensor] = []
+    target_batches: list[torch.Tensor] = []
     total = 0
-    for images, _ in dataloader:
-        batches.append(images)
+    for images, targets in dataloader:
+        image_batches.append(images)
+        if include_targets:
+            target_batches.append(torch.as_tensor(targets))
         total += int(images.shape[0])
         if total >= sample_count:
             break
 
-    if not batches:
+    if not image_batches:
         raise ValueError("Could not load real samples for metrics.")
-    return torch.cat(batches, dim=0)[:sample_count]
+    result = {
+        "samples": torch.cat(image_batches, dim=0)[:sample_count],
+        "targets": None,
+        "class_names": _dataset_class_names(dataset),
+    }
+    if include_targets:
+        if not target_batches:
+            raise ValueError("Could not load real sample labels for perturbation.")
+        result["targets"] = torch.cat(target_batches, dim=0)[:sample_count]
+    return result
 
 
 def _to_feature_matrix(samples: torch.Tensor) -> np.ndarray:
@@ -202,6 +251,41 @@ def main():
         return
 
     output_path = Path(args.out_dir) / "generated_samples.png"
+
+    perturbed_real_samples: torch.Tensor | None = None
+    perturb_reference_targets: torch.Tensor | None = None
+    perturb_reference_class_names: list[str] | None = None
+    if perturbations_enabled(args):
+        needs_real_reference = perturbation_needs_real_reference(args)
+        needs_reference_targets = perturbation_needs_reference_targets(args)
+        if needs_real_reference:
+            metric_image_size = args.metrics_image_size
+            if int(samples.shape[-1]) == int(samples.shape[-2]):
+                metric_image_size = int(samples.shape[-1])
+            reference_bundle = _load_real_reference(
+                dataset_name=args.metrics_dataset,
+                data_root=args.metrics_data_root,
+                image_size=metric_image_size,
+                sample_count=max(int(samples.shape[0]), int(args.metrics_samples)),
+                download_if_missing=args.metrics_download_if_missing,
+                include_targets=needs_reference_targets,
+            )
+            perturbed_real_samples = reference_bundle["samples"]
+            perturb_reference_targets = reference_bundle["targets"]
+            perturb_reference_class_names = reference_bundle["class_names"]
+
+        samples, perturbed_real_samples, perturbation_info = apply_configured_perturbations(
+            fake_samples=samples,
+            args=args,
+            real_samples=perturbed_real_samples,
+            reference_targets=perturb_reference_targets,
+            reference_class_names=perturb_reference_class_names,
+            dataset_name=args.metrics_dataset,
+        )
+        perturbation_path = Path(args.out_dir) / "perturbation_config.json"
+        perturbation_path.write_text(json.dumps(perturbation_info, indent=2), encoding="utf-8")
+        print(f"Saved perturbation config to {perturbation_path}")
+
     save_image(samples, output_path, nrow=8, normalize=True)
     print(f"Saved {samples.shape[0]} samples to {output_path}")
 
@@ -211,13 +295,17 @@ def main():
             if int(samples.shape[-1]) == int(samples.shape[-2]):
                 metric_image_size = int(samples.shape[-1])
 
-            real_samples = _load_real_samples(
-                dataset_name=args.metrics_dataset,
-                data_root=args.metrics_data_root,
-                image_size=metric_image_size,
-                sample_count=args.metrics_samples,
-                download_if_missing=args.metrics_download_if_missing,
-            )
+            real_samples = perturbed_real_samples
+            if real_samples is None or int(real_samples.shape[0]) < int(args.metrics_samples):
+                real_samples = _load_real_samples(
+                    dataset_name=args.metrics_dataset,
+                    data_root=args.metrics_data_root,
+                    image_size=metric_image_size,
+                    sample_count=args.metrics_samples,
+                    download_if_missing=args.metrics_download_if_missing,
+                )
+            else:
+                real_samples = real_samples[: int(args.metrics_samples)]
             metrics = _evaluate_and_save_metrics(
                 real_samples=real_samples,
                 fake_samples=samples,

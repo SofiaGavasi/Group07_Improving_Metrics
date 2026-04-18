@@ -13,3 +13,4 @@ kagglehub[pandas-datasets]
 gdown
 torchmetrics
 torchmetrics[image]
+albumentations
