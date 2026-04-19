@@ -190,6 +190,46 @@ def step_test_dcgan_cifar10(args: argparse.Namespace):
     return cmd
 
 
+def step_test_dcgan_mnist(args: argparse.Namespace):
+    netg_path = args.dcgan_test_netg or str(Path(args.outputs_root) / "dcgan_mnist" / "netG_latest.pth")
+    cmd = [
+        PYTHON_EXE,
+        str(SCRIPTS_DIR / "test_dcgan.py"),
+        "--netG",
+        netg_path,
+        "--out-dir",
+        str(Path(args.outputs_root) / "dcgan_mnist_test"),
+        "--num-samples",
+        str(args.test_num_samples),
+        "--batch-size",
+        str(args.test_batch_size),
+        "--image-size",
+        str(args.image_size),
+        "--channels",
+        "1",
+    ]
+    if args.eval_metrics:
+        cmd.extend(
+            [
+                "--eval-metrics",
+                "--metrics-dataset",
+                "mnist",
+                "--metrics-data-root",
+                str(Path(args.data_root) / "MNIST"),
+                "--metrics-samples",
+                str(args.metrics_samples),
+            ]
+        )
+        if args.metrics_download_if_missing:
+            cmd.append("--metrics-download-if-missing")
+    if args.cuda:
+        cmd.append("--cuda")
+    append_perturbation_args(cmd, args)
+    if args.strict_tests:
+        cmd.append("--strict")
+    return cmd
+
+
 def step_test_wgangp_cifar10(args: argparse.Namespace):
     generator_path = args.wgangp_test_generator or str(
         Path(args.outputs_root) / "wgangp_cifar10" / "netG_latest.pth"
@@ -318,6 +358,7 @@ def _perturbations_enabled(args: argparse.Namespace) -> bool:
         or args.perturb_degrade
         or args.perturb_memoisation
         or args.perturb_class_removal
+        or args.perturb_class_imbalance
     )
 
 
@@ -364,6 +405,29 @@ def append_perturbation_args(cmd: list[str], args: argparse.Namespace):
             ]
         )
         cmd.extend(["--perturb-class-removal-min-kept", str(args.perturb_class_removal_min_kept)])
+    if args.perturb_class_imbalance:
+        cmd.append("--perturb-class-imbalance")
+        cmd.extend(["--perturb-class-imbalance-strategy", args.perturb_class_imbalance_strategy])
+        cmd.extend(["--perturb-class-imbalance-targets", args.perturb_class_imbalance_targets])
+        cmd.extend(["--perturb-class-imbalance-balance", str(args.perturb_class_imbalance_balance)])
+        cmd.extend(["--perturb-class-imbalance-kmeans-k", str(args.perturb_class_imbalance_kmeans_k)])
+        if args.perturb_class_imbalance_kmeans_cache_path.strip():
+            cmd.extend(
+                [
+                    "--perturb-class-imbalance-kmeans-cache-path",
+                    args.perturb_class_imbalance_kmeans_cache_path.strip(),
+                ]
+            )
+        if args.perturb_class_imbalance_kmeans_recreate:
+            cmd.append("--perturb-class-imbalance-kmeans-recreate")
+        cmd.extend(["--perturb-class-imbalance-seed", str(args.perturb_class_imbalance_seed)])
+        cmd.extend(
+            [
+                "--perturb-class-imbalance-label-threshold",
+                str(args.perturb_class_imbalance_label_threshold),
+            ]
+        )
+        cmd.extend(["--perturb-class-imbalance-min-kept", str(args.perturb_class_imbalance_min_kept)])
 
 
 STEP_BUILDERS: dict[str, StepBuilder] = {
@@ -376,6 +440,7 @@ STEP_BUILDERS: dict[str, StepBuilder] = {
     "train_dcgan_cifar10": step_train_dcgan_cifar10,
     "train_wgangp_cifar10": step_train_wgangp_cifar10,
     "test_dcgan_cifar10": step_test_dcgan_cifar10,
+    "test_dcgan_mnist": step_test_dcgan_mnist,
     "test_wgangp_cifar10": step_test_wgangp_cifar10,
     "test_studiogan_cifar10": step_test_studiogan_cifar10,
     "test_ddpm_cifar10": step_test_ddpm_cifar10,
@@ -399,6 +464,7 @@ PROFILES: dict[str, list[str]] = {
     ],
     "test": [
         "test_dcgan_cifar10",
+        "test_dcgan_mnist",
         "test_wgangp_cifar10",
         "test_studiogan_cifar10",
         "test_ddpm_cifar10",
@@ -414,6 +480,7 @@ PROFILES: dict[str, list[str]] = {
         "train_dcgan_cifar10",
         "train_wgangp_cifar10",
         "test_dcgan_cifar10",
+        "test_dcgan_mnist",
         "test_wgangp_cifar10",
         "test_studiogan_cifar10",
         "test_ddpm_cifar10",
@@ -477,7 +544,7 @@ def parse_args():
         "--perturb-apply-to",
         choices=["fake", "real", "both"],
         default="fake",
-        help="Which sample set perturbations should target (memoisation/class-removal are fake-only).",
+        help="Which sample set perturbations should target (memoisation/class-removal/class-imbalance are fake-only).",
     )
     parser.add_argument(
         "--perturb-degrade",
@@ -542,6 +609,45 @@ def parse_args():
     parser.add_argument("--perturb-class-removal-seed", type=int, default=10)
     parser.add_argument("--perturb-class-removal-label-threshold", type=float, default=0.0)
     parser.add_argument("--perturb-class-removal-min-kept", type=int, default=4)
+    parser.add_argument(
+        "--perturb-class-imbalance",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable class-imbalance perturbation (partially remove selected fake classes/modes).",
+    )
+    parser.add_argument(
+        "--perturb-class-imbalance-strategy",
+        choices=["label", "kmeans"],
+        default="label",
+    )
+    parser.add_argument(
+        "--perturb-class-imbalance-targets",
+        type=str,
+        default="",
+        help="Comma-separated labels/ids or kmeans label-cluster ids to skew.",
+    )
+    parser.add_argument(
+        "--perturb-class-imbalance-balance",
+        type=str,
+        default="0.5",
+        help="Drop ratio for selected targets. Single value or comma-separated list.",
+    )
+    parser.add_argument("--perturb-class-imbalance-kmeans-k", type=int, default=8)
+    parser.add_argument(
+        "--perturb-class-imbalance-kmeans-cache-path",
+        type=str,
+        default="",
+        help="Optional path to save/reuse kmeans label-cluster assignments.",
+    )
+    parser.add_argument(
+        "--perturb-class-imbalance-kmeans-recreate",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Ignore existing kmeans cache and rebuild label clusters.",
+    )
+    parser.add_argument("--perturb-class-imbalance-seed", type=int, default=10)
+    parser.add_argument("--perturb-class-imbalance-label-threshold", type=float, default=0.0)
+    parser.add_argument("--perturb-class-imbalance-min-kept", type=int, default=4)
     parser.add_argument(
         "--strict-tests",
         action="store_true",
@@ -615,6 +721,8 @@ def _extract_flag_value(cmd: list[str], flag: str) -> str:
 
 
 def _dataset_for_test_step(step_name: str) -> str:
+    if step_name.endswith("_mnist"):
+        return "mnist"
     if step_name.endswith("_cifar10"):
         return "cifar10"
     if step_name.endswith("_celeba"):
@@ -700,6 +808,23 @@ def _perturbation_config_json_from_cmd(cmd: list[str]) -> str:
             "seed": _extract_flag_value(cmd, "--perturb-class-removal-seed") or "10",
             "label_threshold": _extract_flag_value(cmd, "--perturb-class-removal-label-threshold") or "0.0",
             "min_kept": _extract_flag_value(cmd, "--perturb-class-removal-min-kept") or "4",
+        },
+        "class_imbalance": {
+            "enabled": "--perturb-class-imbalance" in cmd,
+            "strategy": _extract_flag_value(cmd, "--perturb-class-imbalance-strategy") or "label",
+            "targets": _extract_flag_value(cmd, "--perturb-class-imbalance-targets"),
+            "balance": _extract_flag_value(cmd, "--perturb-class-imbalance-balance") or "0.5",
+            "kmeans_k": _extract_flag_value(cmd, "--perturb-class-imbalance-kmeans-k") or "8",
+            "kmeans_cache_path": _extract_flag_value(
+                cmd, "--perturb-class-imbalance-kmeans-cache-path"
+            ),
+            "kmeans_recreate": "--perturb-class-imbalance-kmeans-recreate" in cmd,
+            "seed": _extract_flag_value(cmd, "--perturb-class-imbalance-seed") or "10",
+            "label_threshold": _extract_flag_value(
+                cmd, "--perturb-class-imbalance-label-threshold"
+            )
+            or "0.0",
+            "min_kept": _extract_flag_value(cmd, "--perturb-class-imbalance-min-kept") or "4",
         },
     }
     return json.dumps(config, separators=(",", ":"))

@@ -6,6 +6,7 @@ from typing import Any
 import torch
 from torch.utils.data import TensorDataset
 
+from .class_imbalance import apply_class_imbalance
 from .class_removal import apply_class_removal
 
 
@@ -91,6 +92,51 @@ def add_perturbation_args(parser: argparse.ArgumentParser):
         help="Margin for multi-label prototype assignment. Higher means stricter positives.",
     )
     parser.add_argument("--perturb-class-removal-min-kept", type=int, default=4)
+    parser.add_argument(
+        "--perturb-class-imbalance",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable class-imbalance perturbation (partial class dropping).",
+    )
+    parser.add_argument(
+        "--perturb-class-imbalance-strategy",
+        choices=["label", "kmeans"],
+        default="label",
+        help="Class-imbalance strategy: direct labels or kmeans over label co-occurrence.",
+    )
+    parser.add_argument(
+        "--perturb-class-imbalance-targets",
+        type=str,
+        default="",
+        help="Comma-separated labels/indices (or kmeans label-cluster ids) to skew.",
+    )
+    parser.add_argument(
+        "--perturb-class-imbalance-balance",
+        type=str,
+        default="0.5",
+        help="Drop ratio for selected targets. Use a single float or comma-separated per target.",
+    )
+    parser.add_argument("--perturb-class-imbalance-kmeans-k", type=int, default=8)
+    parser.add_argument(
+        "--perturb-class-imbalance-kmeans-cache-path",
+        type=str,
+        default="",
+        help="Optional path to save/reuse kmeans label-cluster assignments.",
+    )
+    parser.add_argument(
+        "--perturb-class-imbalance-kmeans-recreate",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="If true, ignore existing cache and rebuild kmeans label clusters.",
+    )
+    parser.add_argument("--perturb-class-imbalance-seed", type=int, default=10)
+    parser.add_argument(
+        "--perturb-class-imbalance-label-threshold",
+        type=float,
+        default=0.0,
+        help="Margin for multi-label prototype assignment. Higher means stricter positives.",
+    )
+    parser.add_argument("--perturb-class-imbalance-min-kept", type=int, default=4)
 
 
 def perturbations_enabled(args: argparse.Namespace):
@@ -99,6 +145,7 @@ def perturbations_enabled(args: argparse.Namespace):
         or getattr(args, "perturb_degrade", False)
         or getattr(args, "perturb_memoisation", False)
         or getattr(args, "perturb_class_removal", False)
+        or getattr(args, "perturb_class_imbalance", False)
     )
 
 
@@ -108,6 +155,7 @@ def perturbation_needs_reference_targets(args: argparse.Namespace):
     # - kmeans: build label co-occurrence clusters
     return bool(
         getattr(args, "perturb_class_removal", False)
+        or getattr(args, "perturb_class_imbalance", False)
     )
 
 
@@ -130,6 +178,8 @@ def get_perturbation_config_dict(args: argparse.Namespace) :
         active.append("memoisation")
     if getattr(args, "perturb_class_removal", False):
         active.append("class_removal")
+    if getattr(args, "perturb_class_imbalance", False):
+        active.append("class_imbalance")
 
     return {
         "enabled": enabled,
@@ -159,7 +209,37 @@ def get_perturbation_config_dict(args: argparse.Namespace) :
             "min_kept": int(getattr(args, "perturb_class_removal_min_kept", 4)),
             "out_dir": str(getattr(args, "out_dir", "")),
         },
+        "class_imbalance": {
+            "enabled": bool(getattr(args, "perturb_class_imbalance", False)),
+            "strategy": str(getattr(args, "perturb_class_imbalance_strategy", "label")),
+            "targets_raw": str(getattr(args, "perturb_class_imbalance_targets", "")),
+            "balance": _parse_balance_value(
+                str(getattr(args, "perturb_class_imbalance_balance", "0.5"))
+            ),
+            "kmeans_k": int(getattr(args, "perturb_class_imbalance_kmeans_k", 8)),
+            "kmeans_cache_path": str(
+                getattr(args, "perturb_class_imbalance_kmeans_cache_path", "")
+            ),
+            "kmeans_recreate": bool(
+                getattr(args, "perturb_class_imbalance_kmeans_recreate", False)
+            ),
+            "seed": int(getattr(args, "perturb_class_imbalance_seed", 10)),
+            "label_threshold": float(
+                getattr(args, "perturb_class_imbalance_label_threshold", 0.0)
+            ),
+            "min_kept": int(getattr(args, "perturb_class_imbalance_min_kept", 4)),
+            "out_dir": str(getattr(args, "out_dir", "")),
+        },
     }
+
+
+def _parse_balance_value(raw: str) -> float | list[float]:
+    tokens = [piece.strip() for piece in str(raw).split(",") if piece.strip()]
+    if not tokens:
+        return 0.5
+    if len(tokens) == 1:
+        return float(tokens[0])
+    return [float(token) for token in tokens]
 
 
 def _as_labeled_tensor_dataset(samples: torch.Tensor):
@@ -295,5 +375,20 @@ def apply_configured_perturbations(
             )
             config["class_removal"]["result"] = class_removal_details
             config["applied"].append("class_removal:fake")
+
+    if config["class_imbalance"]["enabled"]:
+        if not apply_to_fake:
+            config["skipped"].append("class_imbalance skipped because perturb_apply_to excludes fake samples")
+        else:
+            fake_out, class_imbalance_details = apply_class_imbalance(
+                fake_samples=fake_out,
+                config=config["class_imbalance"],
+                real_samples=real_out,
+                reference_targets=reference_targets,
+                reference_class_names=reference_class_names,
+                dataset_name=dataset_name,
+            )
+            config["class_imbalance"]["result"] = class_imbalance_details
+            config["applied"].append("class_imbalance:fake")
 
     return fake_out, real_out, config
