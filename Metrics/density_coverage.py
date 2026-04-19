@@ -166,6 +166,3 @@ def compute_density_coverage(real_samples: Any, fake_samples: Any, k: int = 5, *
         "coverage": float(coverage),
     } 
     '''
-#some tests
-
-
