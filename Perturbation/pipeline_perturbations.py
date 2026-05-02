@@ -138,6 +138,14 @@ def add_perturbation_args(parser: argparse.ArgumentParser):
     )
     parser.add_argument("--perturb-class-imbalance-min-kept", type=int, default=4)
 
+    parser.add_argument(
+        "--perturb-sample-size",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable sample-size variation perturbation.",
+    )
+    parser.add_argument("--perturb-sample-size-n", type=int, default=1000)
+    parser.add_argument("--perturb-sample-size-seed", type=int, default=42)
 
 def perturbations_enabled(args: argparse.Namespace):
     return bool(
@@ -146,6 +154,7 @@ def perturbations_enabled(args: argparse.Namespace):
         or getattr(args, "perturb_memoisation", False)
         or getattr(args, "perturb_class_removal", False)
         or getattr(args, "perturb_class_imbalance", False)
+        or getattr(args, "perturb_sample_size", False)
     )
 
 
@@ -180,6 +189,8 @@ def get_perturbation_config_dict(args: argparse.Namespace) :
         active.append("class_removal")
     if getattr(args, "perturb_class_imbalance", False):
         active.append("class_imbalance")
+    if getattr(args, "perturb_sample_size", False):
+        active.append("sample_size")
 
     return {
         "enabled": enabled,
@@ -229,6 +240,11 @@ def get_perturbation_config_dict(args: argparse.Namespace) :
             ),
             "min_kept": int(getattr(args, "perturb_class_imbalance_min_kept", 4)),
             "out_dir": str(getattr(args, "out_dir", "")),
+        },
+        "sample_size": {
+            "enabled": bool(getattr(args, "perturb_sample_size", False)),
+            "n": int(getattr(args, "perturb_sample_size_n", 1000)),
+            "seed": int(getattr(args, "perturb_sample_size_seed", 42)),
         },
     }
 
@@ -303,6 +319,30 @@ def _apply_memoisation(
     )
     return _dataset_to_tensor(wrapped, expected_count=int(fake_samples.shape[0]))
 
+def _apply_sample_size_variation(
+    samples: torch.Tensor,
+    n: int,
+    seed: int,
+) -> torch.Tensor:
+    total = int(samples.shape[0])
+
+    if total == 0:
+        raise ValueError("Sample-size perturbation received an empty tensor.")
+
+    if int(n) <= 0:
+        raise ValueError("Sample-size n must be > 0.")
+
+    if int(n) > total:
+        raise ValueError(
+            f"Sample-size n cannot exceed available samples. "
+            f"Requested n={int(n)}, available={total}."
+        )
+
+    generator = torch.Generator()
+    generator.manual_seed(int(seed))
+
+    indices = torch.randperm(total, generator=generator)[: int(n)]
+    return samples[indices]
 
 def apply_configured_perturbations(
     fake_samples: torch.Tensor,
@@ -390,5 +430,28 @@ def apply_configured_perturbations(
             )
             config["class_imbalance"]["result"] = class_imbalance_details
             config["applied"].append("class_imbalance:fake")
+
+    if config["sample_size"]["enabled"]:
+        n = int(config["sample_size"]["n"])
+        seed = int(config["sample_size"]["seed"])
+
+        if apply_to_fake:
+            fake_out = _apply_sample_size_variation(
+                samples=fake_out,
+                n=n,
+                seed=seed,
+            )
+            config["applied"].append("sample_size:fake")
+
+        if apply_to_real:
+            if real_out is None:
+                raise ValueError("Real samples are required for sample-size perturbation on real data.")
+
+            real_out = _apply_sample_size_variation(
+                samples=real_out,
+                n=n,
+                seed=seed + 1,
+            )
+            config["applied"].append("sample_size:real")
 
     return fake_out, real_out, config

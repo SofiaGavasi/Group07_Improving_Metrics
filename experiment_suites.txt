@@ -31,6 +31,11 @@ EXPERIMENT_BASE_OVERRIDES = {
     'PERTURB_MEMO_FRACTION': 0.1,
     'PERTURB_MEMO_SEED': 10,
     'USE_PERTURBATIONS': True,
+
+    # sample-size variation
+    'PERTURB_SAMPLE_SIZE': False,
+    'PERTURB_SAMPLE_SIZE_N': 1000,
+    'PERTURB_SAMPLE_SIZE_SEED': 42,
 }
 
 # 1) Copy of the current StyleGAN2 + CelebA suite
@@ -329,6 +334,45 @@ STYLEGAN_CELEBA_EXPERIMENTS = [
             'PERTURB_CLASS_IMBALANCE_KMEANS_K': 12,
             'PERTURB_CLASS_IMBALANCE_STRATEGY': 'kmeans',
             'PERTURB_CLASS_IMBALANCE_TARGETS': '1',
+        },
+    },
+        {
+        "name": "stylegan2_celeba_sample_size_1000",
+        "steps": ["test_stylegan2_celeba"],
+        "model_name": "stylegan2",
+        "dataset_name": "celeba",
+        "overrides": {
+            **EXPERIMENT_BASE_OVERRIDES,
+            "PERTURB_SAMPLE_SIZE": True,
+            "PERTURB_SAMPLE_SIZE_N": 1000,
+            "PERTURB_SAMPLE_SIZE_SEED": 42,
+            "PERTURB_APPLY_TO": "both",
+        },
+    },
+    {
+        "name": "stylegan2_celeba_sample_size_5000",
+        "steps": ["test_stylegan2_celeba"],
+        "model_name": "stylegan2",
+        "dataset_name": "celeba",
+        "overrides": {
+            **EXPERIMENT_BASE_OVERRIDES,
+            "PERTURB_SAMPLE_SIZE": True,
+            "PERTURB_SAMPLE_SIZE_N": 5000,
+            "PERTURB_SAMPLE_SIZE_SEED": 42,
+            "PERTURB_APPLY_TO": "both",
+        },
+    },
+    {
+        "name": "stylegan2_celeba_sample_size_10000",
+        "steps": ["test_stylegan2_celeba"],
+        "model_name": "stylegan2",
+        "dataset_name": "celeba",
+        "overrides": {
+            **EXPERIMENT_BASE_OVERRIDES,
+            "PERTURB_SAMPLE_SIZE": True,
+            "PERTURB_SAMPLE_SIZE_N": 10000,
+            "PERTURB_SAMPLE_SIZE_SEED": 42,
+            "PERTURB_APPLY_TO": "both",
         },
     },
 ]
@@ -656,6 +700,48 @@ DCGAN_CIFAR10_EXPERIMENTS = [
             'PERTURB_CLASS_IMBALANCE_TARGETS': '1',
         },
     },
+        {
+        "name": "dcgan_cifar10_sample_size_1000",
+        "steps": ["test_dcgan_cifar10"],
+        "model_name": "dcgan",
+        "dataset_name": "cifar10",
+        "overrides": {
+            **EXPERIMENT_BASE_OVERRIDES,
+            "DCGAN_TEST_NETG": "REPLACE_WITH_PATH_TO_DCGAN_CIFAR10_WEIGHTS/netG_latest.pth",
+            "PERTURB_SAMPLE_SIZE": True,
+            "PERTURB_SAMPLE_SIZE_N": 1000,
+            "PERTURB_SAMPLE_SIZE_SEED": 42,
+            "PERTURB_APPLY_TO": "both",
+        },
+    },
+    {
+        "name": "dcgan_cifar10_sample_size_5000",
+        "steps": ["test_dcgan_cifar10"],
+        "model_name": "dcgan",
+        "dataset_name": "cifar10",
+        "overrides": {
+            **EXPERIMENT_BASE_OVERRIDES,
+            "DCGAN_TEST_NETG": "REPLACE_WITH_PATH_TO_DCGAN_CIFAR10_WEIGHTS/netG_latest.pth",
+            "PERTURB_SAMPLE_SIZE": True,
+            "PERTURB_SAMPLE_SIZE_N": 5000,
+            "PERTURB_SAMPLE_SIZE_SEED": 42,
+            "PERTURB_APPLY_TO": "both",
+        },
+    },
+    {
+        "name": "dcgan_cifar10_sample_size_10000",
+        "steps": ["test_dcgan_cifar10"],
+        "model_name": "dcgan",
+        "dataset_name": "cifar10",
+        "overrides": {
+            **EXPERIMENT_BASE_OVERRIDES,
+            "DCGAN_TEST_NETG": "REPLACE_WITH_PATH_TO_DCGAN_CIFAR10_WEIGHTS/netG_latest.pth",
+            "PERTURB_SAMPLE_SIZE": True,
+            "PERTURB_SAMPLE_SIZE_N": 10000,
+            "PERTURB_SAMPLE_SIZE_SEED": 42,
+            "PERTURB_APPLY_TO": "both",
+        },
+    },
 ]
 
 # 3) Full DCGAN + MNIST suite (same perturbation coverage)
@@ -979,6 +1065,48 @@ DCGAN_MNIST_EXPERIMENTS = [
             'PERTURB_CLASS_IMBALANCE_KMEANS_K': 12,
             'PERTURB_CLASS_IMBALANCE_STRATEGY': 'kmeans',
             'PERTURB_CLASS_IMBALANCE_TARGETS': '1',
+        },
+    },
+        {
+        "name": "dcgan_mnist_sample_size_1000",
+        "steps": ["test_dcgan_mnist"],
+        "model_name": "dcgan",
+        "dataset_name": "mnist",
+        "overrides": {
+            **EXPERIMENT_BASE_OVERRIDES,
+            "DCGAN_TEST_NETG": "REPLACE_WITH_PATH_TO_DCGAN_MNIST_WEIGHTS/netG_latest.pth",
+            "PERTURB_SAMPLE_SIZE": True,
+            "PERTURB_SAMPLE_SIZE_N": 1000,
+            "PERTURB_SAMPLE_SIZE_SEED": 42,
+            "PERTURB_APPLY_TO": "both",
+        },
+    },
+    {
+        "name": "dcgan_mnist_sample_size_5000",
+        "steps": ["test_dcgan_mnist"],
+        "model_name": "dcgan",
+        "dataset_name": "mnist",
+        "overrides": {
+            **EXPERIMENT_BASE_OVERRIDES,
+            "DCGAN_TEST_NETG": "REPLACE_WITH_PATH_TO_DCGAN_MNIST_WEIGHTS/netG_latest.pth",
+            "PERTURB_SAMPLE_SIZE": True,
+            "PERTURB_SAMPLE_SIZE_N": 5000,
+            "PERTURB_SAMPLE_SIZE_SEED": 42,
+            "PERTURB_APPLY_TO": "both",
+        },
+    },
+    {
+        "name": "dcgan_mnist_sample_size_10000",
+        "steps": ["test_dcgan_mnist"],
+        "model_name": "dcgan",
+        "dataset_name": "mnist",
+        "overrides": {
+            **EXPERIMENT_BASE_OVERRIDES,
+            "DCGAN_TEST_NETG": "REPLACE_WITH_PATH_TO_DCGAN_MNIST_WEIGHTS/netG_latest.pth",
+            "PERTURB_SAMPLE_SIZE": True,
+            "PERTURB_SAMPLE_SIZE_N": 10000,
+            "PERTURB_SAMPLE_SIZE_SEED": 42,
+            "PERTURB_APPLY_TO": "both",
         },
     },
 ]

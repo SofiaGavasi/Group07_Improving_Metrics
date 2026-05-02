@@ -359,6 +359,7 @@ def _perturbations_enabled(args: argparse.Namespace) -> bool:
         or args.perturb_memoisation
         or args.perturb_class_removal
         or args.perturb_class_imbalance
+        or args.perturb_sample_size
     )
 
 
@@ -429,6 +430,10 @@ def append_perturbation_args(cmd: list[str], args: argparse.Namespace):
         )
         cmd.extend(["--perturb-class-imbalance-min-kept", str(args.perturb_class_imbalance_min_kept)])
 
+    if args.perturb_sample_size:
+        cmd.append("--perturb-sample-size")
+        cmd.extend(["--perturb-sample-size-n", str(args.perturb_sample_size_n)])
+        cmd.extend(["--perturb-sample-size-seed", str(args.perturb_sample_size_seed)])
 
 STEP_BUILDERS: dict[str, StepBuilder] = {
     "prep_mnist_cifar10": step_prep_mnist_cifar10,
@@ -649,6 +654,14 @@ def parse_args():
     parser.add_argument("--perturb-class-imbalance-label-threshold", type=float, default=0.0)
     parser.add_argument("--perturb-class-imbalance-min-kept", type=int, default=4)
     parser.add_argument(
+        "--perturb-sample-size",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable sample-size variation perturbation.",
+    )
+    parser.add_argument("--perturb-sample-size-n", type=int, default=1000)
+    parser.add_argument("--perturb-sample-size-seed", type=int, default=42)
+    parser.add_argument(
         "--strict-tests",
         action="store_true",
         help="Fail test steps when placeholder/TODO test scripts are not fully implemented.",
@@ -825,6 +838,11 @@ def _perturbation_config_json_from_cmd(cmd: list[str]) -> str:
             )
             or "0.0",
             "min_kept": _extract_flag_value(cmd, "--perturb-class-imbalance-min-kept") or "4",
+        },
+        "sample_size": {
+            "enabled": "--perturb-sample-size" in cmd,
+            "n": _extract_flag_value(cmd, "--perturb-sample-size-n") or "1000",
+            "seed": _extract_flag_value(cmd, "--perturb-sample-size-seed") or "42",
         },
     }
     return json.dumps(config, separators=(",", ":"))

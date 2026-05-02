@@ -58,13 +58,13 @@ WGANGP_BATCH_SIZE = 64
 
 
 # test stuff:
-TEST_NUM_SAMPLES = 64
+TEST_NUM_SAMPLES = 10000
 TEST_BATCH_SIZE = 64
 
 
 # metric evaluation during test stage:
 EVAL_METRICS = True
-METRICS_SAMPLES = 64
+METRICS_SAMPLES = 10000
 METRICS_DOWNLOAD_IF_MISSING = False
 
 
@@ -107,7 +107,10 @@ PERTURB_CLASS_IMBALANCE_KMEANS_RECREATE = False
 PERTURB_CLASS_IMBALANCE_SEED = 10
 PERTURB_CLASS_IMBALANCE_LABEL_THRESHOLD = 0.0
 PERTURB_CLASS_IMBALANCE_MIN_KEPT = 4
-
+# sample-size perturbation:
+PERTURB_SAMPLE_SIZE = False
+PERTURB_SAMPLE_SIZE_N = 1000
+PERTURB_SAMPLE_SIZE_SEED = 42
 
 # optional explicit checkpoint overrides for model test scripts
 DCGAN_TEST_NETG = ""
@@ -170,6 +173,9 @@ EXPERIMENT_BASE_OVERRIDES: dict[str, Any] = {
     "PERTURB_CLASS_IMBALANCE_SEED": 10,
     "PERTURB_CLASS_IMBALANCE_LABEL_THRESHOLD": 0.0,
     "PERTURB_CLASS_IMBALANCE_MIN_KEPT": 4,
+    "PERTURB_SAMPLE_SIZE": False,
+    "PERTURB_SAMPLE_SIZE_N": 1000,
+    "PERTURB_SAMPLE_SIZE_SEED": 42,
 }
 
 
@@ -505,6 +511,45 @@ EXPERIMENTS: list[dict[str, Any]] = [
             "PERTURB_CLASS_IMBALANCE_SEED": 10,
         },
     },
+        {
+        "name": "sample_size_1000",
+        "steps": ["test_stylegan2_celeba"],
+        "model_name": "stylegan2",
+        "dataset_name": "celeba",
+        "overrides": {
+            **EXPERIMENT_BASE_OVERRIDES,
+            "PERTURB_SAMPLE_SIZE": True,
+            "PERTURB_SAMPLE_SIZE_N": 1000,
+            "PERTURB_SAMPLE_SIZE_SEED": 42,
+            "PERTURB_APPLY_TO": "both",
+        },
+    },
+    {
+        "name": "sample_size_5000",
+        "steps": ["test_stylegan2_celeba"],
+        "model_name": "stylegan2",
+        "dataset_name": "celeba",
+        "overrides": {
+            **EXPERIMENT_BASE_OVERRIDES,
+            "PERTURB_SAMPLE_SIZE": True,
+            "PERTURB_SAMPLE_SIZE_N": 5000,
+            "PERTURB_SAMPLE_SIZE_SEED": 42,
+            "PERTURB_APPLY_TO": "both",
+        },
+    },
+    {
+        "name": "sample_size_10000",
+        "steps": ["test_stylegan2_celeba"],
+        "model_name": "stylegan2",
+        "dataset_name": "celeba",
+        "overrides": {
+            **EXPERIMENT_BASE_OVERRIDES,
+            "PERTURB_SAMPLE_SIZE": True,
+            "PERTURB_SAMPLE_SIZE_N": 10000,
+            "PERTURB_SAMPLE_SIZE_SEED": 42,
+            "PERTURB_APPLY_TO": "both",
+        },
+    },
 ]
 
 
@@ -568,6 +613,9 @@ def _default_settings() -> dict[str, Any]:
         "PERTURB_CLASS_IMBALANCE_SEED": PERTURB_CLASS_IMBALANCE_SEED,
         "PERTURB_CLASS_IMBALANCE_LABEL_THRESHOLD": PERTURB_CLASS_IMBALANCE_LABEL_THRESHOLD,
         "PERTURB_CLASS_IMBALANCE_MIN_KEPT": PERTURB_CLASS_IMBALANCE_MIN_KEPT,
+        "PERTURB_SAMPLE_SIZE": PERTURB_SAMPLE_SIZE,
+        "PERTURB_SAMPLE_SIZE_N": PERTURB_SAMPLE_SIZE_N,
+        "PERTURB_SAMPLE_SIZE_SEED": PERTURB_SAMPLE_SIZE_SEED,
         "DCGAN_TEST_NETG": DCGAN_TEST_NETG,
         "WGANGP_TEST_GENERATOR": WGANGP_TEST_GENERATOR,
         "WGANGP_TEST_CRITIC": WGANGP_TEST_CRITIC,
@@ -613,6 +661,7 @@ def _perturbations_enabled(settings: dict[str, Any]) -> bool:
         or settings["PERTURB_MEMOISATION"]
         or settings["PERTURB_CLASS_REMOVAL"]
         or settings["PERTURB_CLASS_IMBALANCE"]
+        or settings["PERTURB_SAMPLE_SIZE"]
     )
 
 
@@ -686,6 +735,10 @@ def _append_perturbation_args(cmd: list[str], settings: dict[str, Any]) -> None:
             ]
         )
         cmd.extend(["--perturb-class-imbalance-min-kept", str(settings["PERTURB_CLASS_IMBALANCE_MIN_KEPT"])])
+    if settings["PERTURB_SAMPLE_SIZE"]:
+        cmd.append("--perturb-sample-size")
+        cmd.extend(["--perturb-sample-size-n", str(settings["PERTURB_SAMPLE_SIZE_N"])])
+        cmd.extend(["--perturb-sample-size-seed", str(settings["PERTURB_SAMPLE_SIZE_SEED"])])
 
 
 def _build_pipeline_command(pipeline_script: Path, settings: dict[str, Any]) -> list[str]:
