@@ -165,6 +165,9 @@ def _evaluate_and_save_metrics(
     out_dir: Path,
 ):
     from Metrics.compute_all import compute_all_metrics
+    from Metrics.fid import compute_fid_with_clean_fid
+    from torchvision.utils import save_image
+    import os
 
     paired_count = min(int(real_samples.shape[0]), int(fake_samples.shape[0]))
     if paired_count < 4:
@@ -174,6 +177,30 @@ def _evaluate_and_save_metrics(
     fake_features = _to_feature_matrix(fake_samples[:paired_count])
 
     results = compute_all_metrics(real_features, fake_features)
+
+
+    # this adds the clean fid computation and is by far the most time intensive
+
+    # THIS IS VERY TIME CONSUMING - if uncommented and computed it might increase the runtime by x20 times
+    # real_dir = os.path.join(out_dir, "real_images")
+    # fake_dir = os.path.join(out_dir, "fake_images")
+
+    # os.makedirs(real_dir, exist_ok=True)
+    # os.makedirs(fake_dir, exist_ok=True)
+
+    # for i, img in enumerate(real_samples[:paired_count]):
+    #     save_image(img, os.path.join(real_dir, f"{i}.png"))
+
+    # for i, img in enumerate(fake_samples[:paired_count]):
+    #     save_image(img, os.path.join(fake_dir, f"{i}.png"))
+
+    # try:
+    #     results["fid_clean"] = compute_fid_with_clean_fid(real_dir, fake_dir)
+    # except Exception as exc:
+    #     results["fid_clean"] = {"error": str(exc)}
+
+
+    
     metrics_path = out_dir / "metrics_report.json"
     metrics_path.write_text(json.dumps(results, indent=2), encoding="utf-8")
     print(f"Saved metric report to {metrics_path}")

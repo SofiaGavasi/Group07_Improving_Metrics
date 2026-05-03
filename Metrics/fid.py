@@ -84,5 +84,14 @@ def compute_fid_with_clean_fid(real_dir: str, fake_dir: str):
     # TODO: add optional mode/settings args once eval protocol is finalized
 
     from cleanfid import fid
+    print("USING CPU CLEAN FID")   
 
-    return float(fid.compute_fid(real_dir, fake_dir))
+
+    return float(
+        fid.compute_fid(
+            real_dir,
+            fake_dir,
+            device="cpu",
+            num_workers=0   
+        )
+    )
