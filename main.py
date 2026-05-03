@@ -135,7 +135,7 @@ SUBSET_DROP_CLASSES = ""
 
 # Bootstrap
 BOOTSTRAP_RUNS = 5 # this is for initial testing, we need at least 30 
-USE_BOOTSTRAP= True
+USE_BOOTSTRAP= False
 DATASET_SIZE= 10000
 BOOTSTRAP_SAMPLES = 1000
 
@@ -1066,48 +1066,50 @@ def _run_batch(repo_root: Path, pipeline_script: Path, base_settings: dict[str, 
     failed_experiments: list[str] = []
     skipped_count = 0
 
-    dataset_size= DATASET_SIZE
-    num_bootstraps = BOOTSTRAP_RUNS if USE_BOOTSTRAP else 1
+    dataset_size = DATASET_SIZE
+    num_bootstraps = BOOTSTRAP_RUNS if USE_BOOTSTRAP else 0
     bootstrap_size = BOOTSTRAP_SAMPLES
     total_experiments = len(EXPERIMENTS)
     
-    print(f"Running batch: {total_experiments} experiments with {num_bootstraps} bootstraps each.", flush=True)
-
-
+    print(f"Running batch: {total_experiments} experiments.", flush=True)
 
     for exp_idx, exp in enumerate(EXPERIMENTS, 1):
         all_runs_metrics = []
         overall_exit_code = 0
         started_at = datetime.now(timezone.utc)
-        
-        # original data set 
+        cmd = None
+
         original_exp = copy.deepcopy(exp)
         original_exp['name'] = f"{exp.get('name')}_original"
         original_exp.setdefault('overrides', {}).update({
             "METRICS_SAMPLES": dataset_size,
             "TEST_NUM_SAMPLES": dataset_size,
-            "SUBSET_MAX_SAMPLES": None,"SUBSET_FRACTION": None})
+            "SUBSET_MAX_SAMPLES": None,
+            "SUBSET_FRACTION": None
+        })
         
         name, model_name, dataset_name, settings_original, overrides_original = _resolve_experiment_settings(
-                base_settings=base_settings,
-                experiment=original_exp,
-                index=exp_idx,
-            )
-        print(f"\n Running for whole dataset (N={dataset_size}) for {name}")        
+            base_settings=base_settings, experiment=original_exp, index=exp_idx
+        )
+
+        report_path = _report_path(repo_root / str(base_settings["OUTPUTS_ROOT"]), model_name, dataset_name)
+        report = reports_cache.get(report_path)
+        if report is None:
+            report = _load_report(report_path, model_name=model_name, dataset_name=dataset_name)
+            reports_cache[report_path] = report
+
+        print(f"\nRunning for whole dataset (N={dataset_size}) for {name}")        
         if settings_original["RUN"]:
             cmd_original = _build_pipeline_command(pipeline_script, settings_original)
+            cmd = cmd_original
             subprocess.run(cmd_original, cwd=str(repo_root), check=False)
         
         original_output = _collect_test_outputs(settings_original)
+        current_exp_id = _build_experiment_id(exp.get('name', name), model_name, dataset_name, settings_original, overrides_original)
 
-
-        current_exp_id = None 
-        current_cmd = []
-
-        # for the bootstrap 
-        for boot_idx in range(num_bootstraps):
-            bootstrap_exp = copy.deepcopy(exp)
-            if USE_BOOTSTRAP:
+        if USE_BOOTSTRAP:
+            for boot_idx in range(num_bootstraps):
+                bootstrap_exp = copy.deepcopy(exp)
                 bootstrap_exp['name'] = f"{exp.get('name', 'unnamed')}_boot_{boot_idx:03d}"
                 bootstrap_exp.setdefault('overrides', {}).update({
                     "METRICS_SAMPLES": bootstrap_size,
@@ -1115,76 +1117,61 @@ def _run_batch(repo_root: Path, pipeline_script: Path, base_settings: dict[str, 
                     "SUBSET_MAX_SAMPLES": bootstrap_size,
                     "SUBSET_SEED": boot_idx, 
                     "SUBSET_STRATEGY": "random"
-                    })
+                })
+                    
+                _, _, _, settings, overrides = _resolve_experiment_settings(
+                    base_settings=base_settings, experiment=bootstrap_exp, index=exp_idx
+                )
+
+                existing_map = _index_by_experiment_id(report)
+                existing_entry = existing_map.get(current_exp_id)
+                if settings["RUN"] and SKIP_COMPLETED_EXPERIMENTS and existing_entry and _is_completed_entry(existing_entry) and boot_idx == 0:
+                    print(f"Skipping completed experiment: {name}")
+                    skipped_count += 1
+                    break 
+
+                current_cmd = _build_pipeline_command(pipeline_script, settings)
+                cmd = current_cmd
                 
-            name, model_name, dataset_name, settings, overrides = _resolve_experiment_settings(
-                base_settings=base_settings,
-                experiment=bootstrap_exp,
-                index=exp_idx,
-            )
-
-            current_exp_id = _build_experiment_id(
-                experiment_name=exp.get('name', name),
-                model_name=model_name,
-                dataset_name=dataset_name,
-                settings=settings,
-                overrides=overrides,
-            )
-
-            current_cmd = _build_pipeline_command(pipeline_script, settings)
-
-            report_path = _report_path(repo_root / str(base_settings["OUTPUTS_ROOT"]), model_name, dataset_name)
-            report = reports_cache.get(report_path)
-            if report is None:
-                report = _load_report(report_path, model_name=model_name, dataset_name=dataset_name)
-                reports_cache[report_path] = report
-
-            existing = _index_by_experiment_id(report).get(exp_idx)
-            if settings["RUN"] and SKIP_COMPLETED_EXPERIMENTS and existing and _is_completed_entry(existing) and boot_idx == 0:
-                print(f"Skipping completed experiment {exp_idx}/{total_experiments}: {name} ({exp_idx})", flush=True)
-                skipped_count += 1
-                break
-
-            cmd = _build_pipeline_command(pipeline_script=pipeline_script, settings=settings)
-            print(f"\nExperiment {exp_idx}/{total_experiments} | Bootstrap {boot_idx+1}/{num_bootstraps}: {name}", flush=True)
-
-            if settings["RUN"]:
                 print(f"Bootstrap {boot_idx+1}/{num_bootstraps}: {name}")
-                completed = subprocess.run(current_cmd, cwd=str(repo_root), check=False)
-                if completed.returncode != 0:
-                    overall_exit_code = int(completed.returncode)
-                all_runs_metrics.append(_collect_test_outputs(settings))
+                if settings["RUN"]:
+                    completed = subprocess.run(current_cmd, cwd=str(repo_root), check=False)
+                    if completed.returncode != 0:
+                        overall_exit_code = int(completed.returncode)
+                    all_runs_metrics.append(_collect_test_outputs(settings))
 
-        else:
-            status = "completed" if overall_exit_code == 0 else "failed"
-            entry = {
-                "experiment_id": current_exp_id,
-                "name": exp.get('name', name),
-                "status": status,
-                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-                "started_at_utc": started_at.isoformat(),
-                "finished_at_utc": datetime.now(timezone.utc).isoformat(),
-                "model_name": model_name,
-                "dataset_name": dataset_name,
-                "profile": str(settings["PROFILE"]),
-                "steps": _to_str_list(settings["CUSTOM_STEPS"]),
-                "output_root": str(settings["OUTPUTS_ROOT"]),
-                "exit_code": overall_exit_code,
-                "command": " ".join(cmd),
-                "overrides": exp.get("overrides", {}),
-                "all_bootstrap_outputs": all_runs_metrics,
-                "test_outputs": original_output,
-                "metrics_expected": bool(settings["EVAL_METRICS"]),
-            }
-            entry["metrics_available"] = _entry_has_metrics(entry) if settings["RUN"] else False
-            
-            _upsert_report_entry(report, entry)
-            _write_report(report_path, report)
+        status = "completed" if overall_exit_code == 0 else "failed"
+        final_settings = settings if (USE_BOOTSTRAP and 'settings' in locals()) else settings_original
+        
+        entry = {
+            "experiment_id": current_exp_id,
+            "name": exp.get('name', name),
+            "status": status,
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "started_at_utc": started_at.isoformat(),
+            "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+            "model_name": model_name,
+            "dataset_name": dataset_name,
+            "profile": str(final_settings["PROFILE"]),
+            "steps": _to_str_list(final_settings["CUSTOM_STEPS"]),
+            "output_root": str(final_settings["OUTPUTS_ROOT"]),
+            "exit_code": overall_exit_code,
+            "command": " ".join(cmd) if cmd else "N/A",
+            "overrides": exp.get("overrides", {}),
+            "all_bootstrap_outputs": all_runs_metrics,
+            "test_outputs": original_output,
+            "metrics_expected": bool(final_settings.get("EVAL_METRICS", True)),
+        }
+        
+        entry["metrics_available"] = _entry_has_metrics(entry) if final_settings["RUN"] else False
+        
+        _upsert_report_entry(report, entry)
+        _write_report(report_path, report)
 
-            if overall_exit_code != 0:
-                failed_experiments.append(f"{name} ({exp_idx})")
-                if not settings["CONTINUE_ON_ERROR"]:
-                    return
+        if overall_exit_code != 0:
+            failed_experiments.append(f"{name} ({exp_idx})")
+            if not settings_original.get("CONTINUE_ON_ERROR", True):
+                return
 
     print("\nBatch summary:", flush=True)
     print(f"- total configured experiments: {len(EXPERIMENTS)}", flush=True)
