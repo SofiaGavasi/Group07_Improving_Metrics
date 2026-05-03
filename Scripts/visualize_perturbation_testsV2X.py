@@ -82,7 +82,7 @@ def collect_files(args_paths: list[str]) -> list[Path]:
 def group_name(exp_name: str) -> str:
     """Map experiment name → colour-group key."""
     n = exp_name.lower()
-    if n.startswith("baseline"):           return "baseline"
+    if "no_perturbation" in n:  return "baseline" #n.startswith("baseline"):           return "baseline"
     if "noise" in n:                       return "degrade_noise"
     if "blur"  in n:                       return "degrade_blur"
     if "jpeg"  in n:                       return "degrade_jpeg"
@@ -625,9 +625,9 @@ def main():
                         help="Output PDF path (default: perturbation_dashboard.pdf)")
     args = parser.parse_args()
     '''
-    files = collect_files([r"C:\Users\jaime\Documents\Maastricht_work\Master\P5\stylegan2_celeba_perturbation_tests.json"])
+    files = collect_files([r"C:\Users\jaime\Documents\Maastricht_work\Master\P5\Semester project\Group07_Improving_Metrics\dcgan_cifar10_perturbation_tests.json"])
     #files = collect_files(args.paths)
-    build_dashboard(files, "perturbation_dashboard_shortX.pdf")
+    build_dashboard(files, "perturbation_dashboard_MNIST.pdf")
 
 
 if __name__ == "__main__":
