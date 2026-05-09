@@ -6,10 +6,12 @@ import torch
 from torchmetrics.image.kid import KernelInceptionDistance
 
 
+# helper for polynomial kernel
 def polynomial_kernel(x: np.ndarray,y: np.ndarray):
     d = x.shape[1] # kernel on feature dimension
     return ((1/d)*(x @ y.T)+ 1 )**3
 
+# helper for kid
 def kid(real_features: np.ndarray, fake_features: np.ndarray):
     m= real_features.shape[0] # comparing based on samples
     n= fake_features.shape[0]
@@ -25,6 +27,7 @@ def kid(real_features: np.ndarray, fake_features: np.ndarray):
 
     return float(kid)
 
+# compute kid
 def compute_kid(real_features: np.ndarray, fake_features: np.ndarray):
     # casting to float32 cuts memory pressure in half for large feature vectors.
     real_features = np.asarray(real_features, dtype=np.float32)
@@ -60,6 +63,7 @@ def compute_kid(real_features: np.ndarray, fake_features: np.ndarray):
 
     return np.mean(KIDs) , np.std(KIDs)
 
+# helper for kid clean
 def kid_clean(real_images: np.ndarray, fake_images: np.ndarray):
 
     kid = KernelInceptionDistance(subset_size=100)

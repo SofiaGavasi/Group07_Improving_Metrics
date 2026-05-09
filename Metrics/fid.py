@@ -4,6 +4,7 @@ import numpy as np
 from scipy.linalg import sqrtm
 
 
+# compute fid
 def calculate_fid(mu1: np.ndarray, sigma1: np.ndarray, mu2: np.ndarray, sigma2: np.ndarray):
 
     diff = mu1 - mu2
@@ -24,6 +25,7 @@ def calculate_fid(mu1: np.ndarray, sigma1: np.ndarray, mu2: np.ndarray, sigma2: 
     return float(sum_sq_diff + tr_covmean)
 
 
+# helper for to 2d float64
 def _to_2d_float64(features: np.ndarray) :
     arr = np.asarray(features, dtype=np.float64)
     if arr.ndim != 2:
@@ -31,18 +33,24 @@ def _to_2d_float64(features: np.ndarray) :
     return arr
 
 
+# helper for project high dim features
 def _project_high_dim_features(
     real_features: np.ndarray,
     fake_features: np.ndarray,
     max_cov_dim: int = 2048,
 ) :
-    # for very large D ( 3*256*256), computing DxD covariance is not feasible
-    # project both sets to a shared low-dimensional subspace before FID
+    # Project to a shared low-dimensional subspace when covariance would be too large
+    # or poorly conditioned for the available number of samples.
     real = _to_2d_float64(real_features)
     fake = _to_2d_float64(fake_features)
     feature_dim = int(real.shape[1])
+    total_samples = int(real.shape[0] + fake.shape[0])
 
-    if feature_dim <= max_cov_dim:
+    # Empirical covariance rank is at most (N_total - 1), so with small N and large D
+    # a full DxD covariance is both unstable and memory-inefficient.
+    allowed_cov_dim = max(1, min(int(max_cov_dim), total_samples - 1))
+
+    if feature_dim <= allowed_cov_dim:
         return real, fake
 
     stacked = np.concatenate([real, fake], axis=0)
@@ -51,7 +59,7 @@ def _project_high_dim_features(
 
     # compact SVD in sample space; effective rank <= num_samples - 1
     _, _, vt = np.linalg.svd(centered, full_matrices=False)
-    proj_dim = max(1, min(int(vt.shape[0]), int(max_cov_dim)))
+    proj_dim = max(1, min(int(vt.shape[0]), int(allowed_cov_dim)))
     basis = vt[:proj_dim].T
 
     real_proj = (real - shared_mean) @ basis
@@ -59,6 +67,7 @@ def _project_high_dim_features(
     return real_proj, fake_proj
 
 
+# compute fid from features
 def compute_fid_from_features(
     real_features: np.ndarray,
     fake_features: np.ndarray,
@@ -77,6 +86,7 @@ def compute_fid_from_features(
     return calculate_fid(real_mu, real_sigma, fake_mu, fake_sigma)
 
 
+# compute fid with clean fid
 def compute_fid_with_clean_fid(real_dir: str, fake_dir: str):
     """
     This is fid using the library clean-fid, just as a reference for debugging

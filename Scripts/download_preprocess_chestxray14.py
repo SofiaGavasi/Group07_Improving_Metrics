@@ -13,6 +13,7 @@ if str(REPO_ROOT) not in sys.path:
 from Datasets.chestxray14_dataset import prepare_chestxray14_dataset
 
 
+# entry point when running this script
 def main():
     parser = argparse.ArgumentParser(description="Download and index ChestX-ray14.")
     parser.add_argument("--data-root", type=str, default="data")

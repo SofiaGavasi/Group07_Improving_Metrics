@@ -4,6 +4,7 @@ import argparse
 from typing import Any
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import TensorDataset
 
 from .class_imbalance import apply_class_imbalance
@@ -145,7 +146,35 @@ def add_perturbation_args(parser: argparse.ArgumentParser):
         help="Enable sample-size variation perturbation.",
     )
     parser.add_argument("--perturb-sample-size-n", type=int, default=1000)
-    parser.add_argument("--perturb-sample-size-seed", type=int, default=42)
+    parser.add_argument("--perturb-sample-size-seed", type=int, default=10)
+    parser.add_argument(
+        "--perturb-preprocessing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable preprocessing-variation perturbation.",
+    )
+    parser.add_argument(
+        "--perturb-preprocessing-variant",
+        type=str,
+        default="downsample_bilinear",
+        choices=[
+            "downsample_nearest",
+            "downsample_bilinear",
+            "downsample_bicubic",
+            "center_crop_pad",
+            "grayscale_triplicate",
+        ],
+    )
+    parser.add_argument("--perturb-preprocessing-scale", type=float, default=0.75)
+    parser.add_argument(
+        "--perturb-domain-shift",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable domain-shift evaluation (uses alternate real reference dataset).",
+    )
+    parser.add_argument("--perturb-domain-shift-dataset", type=str, default="")
+    parser.add_argument("--perturb-domain-shift-data-root", type=str, default="")
+    parser.add_argument("--perturb-domain-shift-image-size", type=int, default=0)
 
 def perturbations_enabled(args: argparse.Namespace):
     return bool(
@@ -155,6 +184,8 @@ def perturbations_enabled(args: argparse.Namespace):
         or getattr(args, "perturb_class_removal", False)
         or getattr(args, "perturb_class_imbalance", False)
         or getattr(args, "perturb_sample_size", False)
+        or getattr(args, "perturb_preprocessing", False)
+        or getattr(args, "perturb_domain_shift", False)
     )
 
 
@@ -191,6 +222,10 @@ def get_perturbation_config_dict(args: argparse.Namespace) :
         active.append("class_imbalance")
     if getattr(args, "perturb_sample_size", False):
         active.append("sample_size")
+    if getattr(args, "perturb_preprocessing", False):
+        active.append("preprocessing_variation")
+    if getattr(args, "perturb_domain_shift", False):
+        active.append("domain_shift")
 
     return {
         "enabled": enabled,
@@ -244,7 +279,18 @@ def get_perturbation_config_dict(args: argparse.Namespace) :
         "sample_size": {
             "enabled": bool(getattr(args, "perturb_sample_size", False)),
             "n": int(getattr(args, "perturb_sample_size_n", 1000)),
-            "seed": int(getattr(args, "perturb_sample_size_seed", 42)),
+            "seed": int(getattr(args, "perturb_sample_size_seed", 10)),
+        },
+        "preprocessing": {
+            "enabled": bool(getattr(args, "perturb_preprocessing", False)),
+            "variant": str(getattr(args, "perturb_preprocessing_variant", "downsample_bilinear")),
+            "scale": float(getattr(args, "perturb_preprocessing_scale", 0.75)),
+        },
+        "domain_shift": {
+            "enabled": bool(getattr(args, "perturb_domain_shift", False)),
+            "dataset": str(getattr(args, "perturb_domain_shift_dataset", "")),
+            "data_root": str(getattr(args, "perturb_domain_shift_data_root", "")),
+            "image_size": int(getattr(args, "perturb_domain_shift_image_size", 0)),
         },
     }
 
@@ -317,7 +363,17 @@ def _apply_memoisation(
         real_ds=_as_labeled_tensor_dataset(real_samples),
         config=config,
     )
-    return _dataset_to_tensor(wrapped, expected_count=int(fake_samples.shape[0]))
+    injected_positions = sorted(int(idx) for idx in wrapped.injected.keys())
+    details = {
+        "fraction": float(config.fraction),
+        "seed": int(config.seed),
+        "total_fake_samples": int(fake_samples.shape[0]),
+        "total_real_samples": int(real_samples.shape[0]),
+        "expected_injected": int(expected_injected),
+        "injected_count": int(len(injected_positions)),
+        "injected_positions": injected_positions,
+    }
+    return _dataset_to_tensor(wrapped, expected_count=int(fake_samples.shape[0])), details
 
 def _apply_sample_size_variation(
     samples: torch.Tensor,
@@ -344,6 +400,75 @@ def _apply_sample_size_variation(
     indices = torch.randperm(total, generator=generator)[: int(n)]
     return samples[indices]
 
+
+def _apply_preprocessing_variation(
+    samples: torch.Tensor,
+    variant: str,
+    scale: float,
+) -> torch.Tensor:
+    if samples.ndim != 4:
+        raise ValueError("Preprocessing variation expects image tensors shaped [N, C, H, W].")
+
+    output = samples.clone()
+    height = int(samples.shape[-2])
+    width = int(samples.shape[-1])
+    down_h = max(1, int(round(height * float(scale))))
+    down_w = max(1, int(round(width * float(scale))))
+
+    if variant == "downsample_nearest":
+        low = F.interpolate(output, size=(down_h, down_w), mode="nearest")
+        return F.interpolate(low, size=(height, width), mode="nearest")
+
+    if variant == "downsample_bilinear":
+        low = F.interpolate(output, size=(down_h, down_w), mode="bilinear", align_corners=False)
+        return F.interpolate(low, size=(height, width), mode="bilinear", align_corners=False)
+
+    if variant == "downsample_bicubic":
+        low = F.interpolate(output, size=(down_h, down_w), mode="bicubic", align_corners=False)
+        return F.interpolate(low, size=(height, width), mode="bicubic", align_corners=False)
+
+    if variant == "center_crop_pad":
+        crop_h = max(1, int(round(height * float(scale))))
+        crop_w = max(1, int(round(width * float(scale))))
+        top = max(0, (height - crop_h) // 2)
+        left = max(0, (width - crop_w) // 2)
+        cropped = output[:, :, top : top + crop_h, left : left + crop_w]
+        restored = torch.zeros_like(output)
+        pad_top = max(0, (height - crop_h) // 2)
+        pad_left = max(0, (width - crop_w) // 2)
+        restored[:, :, pad_top : pad_top + crop_h, pad_left : pad_left + crop_w] = cropped
+        return restored
+
+    if variant == "grayscale_triplicate":
+        if int(output.shape[1]) == 1:
+            return output
+        gray = output.mean(dim=1, keepdim=True)
+        return gray.repeat(1, int(output.shape[1]), 1, 1)
+
+    raise ValueError(f"Unknown preprocessing variation variant: {variant}")
+
+
+def get_domain_shift_override(args: argparse.Namespace) -> dict[str, Any] | None:
+    """
+    Build domain-shift override for test scripts.
+
+    The actual data-source switch happens in the test script because it owns
+    real-reference dataset loading.
+    """
+    if not bool(getattr(args, "perturb_domain_shift", False)):
+        return None
+
+    dataset = str(getattr(args, "perturb_domain_shift_dataset", "")).strip()
+    data_root = str(getattr(args, "perturb_domain_shift_data_root", "")).strip()
+    image_size = int(getattr(args, "perturb_domain_shift_image_size", 0))
+    if not dataset or not data_root:
+        raise ValueError("Domain-shift perturbation needs dataset and data_root.")
+    return {
+        "dataset": dataset,
+        "data_root": data_root,
+        "image_size": image_size,
+    }
+
 def apply_configured_perturbations(
     fake_samples: torch.Tensor,
     args: argparse.Namespace,
@@ -352,11 +477,18 @@ def apply_configured_perturbations(
     reference_class_names: list[str] | None = None,
     dataset_name: str = "",
 ) :
+    verbose = bool(getattr(args, "verbose", False))
+
+    def _v(message: str) -> None:
+        if verbose:
+            print(f"[perturbation] {message}", flush=True)
+
     config = get_perturbation_config_dict(args)
     config["applied"] = []
     config["skipped"] = []
 
     if not config["enabled"]:
+        _v("no perturbations enabled")
         return fake_samples, real_samples, config
 
     fake_out = fake_samples.detach().cpu()
@@ -364,6 +496,11 @@ def apply_configured_perturbations(
     apply_to = str(config["apply_to"])
     apply_to_fake = apply_to in {"fake", "both"}
     apply_to_real = apply_to in {"real", "both"}
+
+    _v(
+        f"enabled={config['active_perturbations']} apply_to={apply_to} "
+        f"fake_in={tuple(fake_out.shape)} real_in={tuple(real_out.shape) if real_out is not None else None}"
+    )
 
     if config["degradation"]["enabled"]:
         if apply_to_fake:
@@ -375,6 +512,7 @@ def apply_configured_perturbations(
                 jpeg_compression=bool(config["degradation"]["jpeg_compression"]),
             )
             config["applied"].append("degradation:fake")
+            _v(f"applied degradation to fake -> shape={tuple(fake_out.shape)}")
         if apply_to_real:
             if real_out is None:
                 raise ValueError("Real samples are required for perturb_apply_to='real' or 'both'.")
@@ -386,6 +524,7 @@ def apply_configured_perturbations(
                 jpeg_compression=bool(config["degradation"]["jpeg_compression"]),
             )
             config["applied"].append("degradation:real")
+            _v(f"applied degradation to real -> shape={tuple(real_out.shape)}")
 
     if config["memoisation"]["enabled"]:
         if not apply_to_fake:
@@ -393,13 +532,15 @@ def apply_configured_perturbations(
         else:
             if real_out is None:
                 raise ValueError("Memoisation perturbation requires real samples.")
-            fake_out = _apply_memoisation(
+            fake_out, memoisation_details = _apply_memoisation(
                 fake_samples=fake_out,
                 real_samples=real_out,
                 fraction=float(config["memoisation"]["fraction"]),
                 seed=int(config["memoisation"]["seed"]),
             )
+            config["memoisation"]["result"] = memoisation_details
             config["applied"].append("memoisation:fake")
+            _v(f"applied memoisation to fake -> shape={tuple(fake_out.shape)}")
 
     if config["class_removal"]["enabled"]:
         if not apply_to_fake:
@@ -415,6 +556,10 @@ def apply_configured_perturbations(
             )
             config["class_removal"]["result"] = class_removal_details
             config["applied"].append("class_removal:fake")
+            _v(
+                "applied class_removal to fake -> "
+                f"removed={class_removal_details.get('removed_count')} kept={class_removal_details.get('kept_count')}"
+            )
 
     if config["class_imbalance"]["enabled"]:
         if not apply_to_fake:
@@ -430,6 +575,10 @@ def apply_configured_perturbations(
             )
             config["class_imbalance"]["result"] = class_imbalance_details
             config["applied"].append("class_imbalance:fake")
+            _v(
+                "applied class_imbalance to fake -> "
+                f"removed={class_imbalance_details.get('removed_count')} kept={class_imbalance_details.get('kept_count')}"
+            )
 
     if config["sample_size"]["enabled"]:
         n = int(config["sample_size"]["n"])
@@ -442,6 +591,7 @@ def apply_configured_perturbations(
                 seed=seed,
             )
             config["applied"].append("sample_size:fake")
+            _v(f"applied sample_size to fake n={n} -> shape={tuple(fake_out.shape)}")
 
         if apply_to_real:
             if real_out is None:
@@ -453,5 +603,38 @@ def apply_configured_perturbations(
                 seed=seed + 1,
             )
             config["applied"].append("sample_size:real")
+            _v(f"applied sample_size to real n={n} -> shape={tuple(real_out.shape)}")
 
+    if config["preprocessing"]["enabled"]:
+        variant = str(config["preprocessing"]["variant"])
+        scale = float(config["preprocessing"]["scale"])
+        if apply_to_fake:
+            fake_out = _apply_preprocessing_variation(
+                samples=fake_out,
+                variant=variant,
+                scale=scale,
+            )
+            config["applied"].append("preprocessing_variation:fake")
+            _v(
+                "applied preprocessing_variation to fake -> "
+                f"variant={variant} scale={scale} shape={tuple(fake_out.shape)}"
+            )
+        if apply_to_real:
+            if real_out is None:
+                raise ValueError("Real samples are required for preprocessing variation on real data.")
+            real_out = _apply_preprocessing_variation(
+                samples=real_out,
+                variant=variant,
+                scale=scale,
+            )
+            config["applied"].append("preprocessing_variation:real")
+            _v(
+                "applied preprocessing_variation to real -> "
+                f"variant={variant} scale={scale} shape={tuple(real_out.shape)}"
+            )
+
+    _v(
+        f"done applied={config['applied']} skipped={config['skipped']} "
+        f"fake_out={tuple(fake_out.shape)} real_out={tuple(real_out.shape) if real_out is not None else None}"
+    )
     return fake_out, real_out, config

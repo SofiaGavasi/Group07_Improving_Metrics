@@ -6,7 +6,6 @@ import json
 import sys
 from pathlib import Path
 
-import numpy as np
 import torch
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
@@ -20,12 +19,19 @@ from Models.dcgan import DCGANGenerator
 from Perturbation.pipeline_perturbations import (
     add_perturbation_args,
     apply_configured_perturbations,
+    get_domain_shift_override,
     perturbation_needs_real_reference,
     perturbation_needs_reference_targets,
     perturbations_enabled,
 )
+from Scripts.test_runtime_utils import (
+    annotate_memoisation_effective_count,
+    make_torch_generator,
+    set_deterministic_seed,
+)
 
 
+# parse args
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate samples from a trained DCGAN generator.")
     parser.add_argument("--netG", type=str, required=True, help="Path to trained generator checkpoint.")
@@ -63,16 +69,31 @@ def parse_args():
         action=argparse.BooleanOptionalAction,
         default=False
     )
+    parser.add_argument(
+        "--verbose",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable verbose logging for generation, perturbations, and metrics.",
+    )
+    parser.add_argument("--metrics-feature-space", type=str, default="inception_v3")
+    parser.add_argument("--metrics-feature-batch-size", type=int, default=64)
+    parser.add_argument("--metrics-feature-device", type=str, default="cpu", choices=["cpu", "cuda"])
+    parser.add_argument("--metrics-bootstrap-samples", type=int, default=0)
+    parser.add_argument("--metrics-bootstrap-seed", type=int, default=10)
+    parser.add_argument("--metrics-bootstrap-alpha", type=float, default=0.05)
+    parser.add_argument("--seed", type=int, default=10)
     add_perturbation_args(parser)
     return parser.parse_args()
 
 
+# load real samples
 def _load_real_samples(
     dataset_name: str,
     data_root: str,
     image_size: int,
     sample_count: int,
     download_if_missing: bool,
+    seed: int,
 ):
     return _load_real_reference(
         dataset_name=dataset_name,
@@ -81,9 +102,21 @@ def _load_real_samples(
         sample_count=sample_count,
         download_if_missing=download_if_missing,
         include_targets=False,
+        seed=seed,
     )["samples"]
 
 
+# helper for resolve real reference request
+def _resolve_real_reference_request(args: argparse.Namespace):
+    # Domain-shift perturbation swaps the real-reference dataset/domain.
+    override = get_domain_shift_override(args)
+    if override is None:
+        return args.metrics_dataset, args.metrics_data_root, args.image_size
+    image_size = int(override["image_size"]) if int(override["image_size"]) > 0 else int(args.image_size)
+    return str(override["dataset"]), str(override["data_root"]), image_size
+
+
+# helper for dataset class names
 def _dataset_class_names(dataset) -> list[str]:
     # checking common class-name fields used by our loaders/datasets
     if hasattr(dataset, "classes") and dataset.classes is not None:
@@ -95,6 +128,7 @@ def _dataset_class_names(dataset) -> list[str]:
     return []
 
 
+# load real reference
 def _load_real_reference(
     dataset_name: str,
     data_root: str,
@@ -102,6 +136,7 @@ def _load_real_reference(
     sample_count: int,
     download_if_missing: bool,
     include_targets: bool,
+    seed: int,
 ):
     loader = make_default_loader(
         dataset_name=dataset_name,
@@ -121,6 +156,7 @@ def _load_real_reference(
         batch_size=min(128, sample_count),
         shuffle=True,
         num_workers=0,
+        generator=make_torch_generator(seed),
     )
     image_batches: list[torch.Tensor] = []
     target_batches: list[torch.Tensor] = []
@@ -147,57 +183,43 @@ def _load_real_reference(
     return result
 
 
-def _to_feature_matrix(samples: torch.Tensor) -> np.ndarray:
-    # current metrics API expects 2D features, so flatten image tensors to vectors.
-    return (
-        samples.detach()
-        .cpu()
-        .float()
-        .reshape(samples.shape[0], -1)
-        .numpy()
-        .astype(np.float64, copy=False)
-    )
-
-
+# compute and save metrics
 def _evaluate_and_save_metrics(
     real_samples: torch.Tensor,
     fake_samples: torch.Tensor,
     out_dir: Path,
+    args: argparse.Namespace,
 ):
-    from Metrics.compute_all import compute_all_metrics
-    from Metrics.fid import compute_fid_with_clean_fid
-    from torchvision.utils import save_image
-    import os
+    from Metrics.compute_all import MetricComputationConfig, compute_all_metrics
 
     paired_count = min(int(real_samples.shape[0]), int(fake_samples.shape[0]))
     if paired_count < 4:
         raise ValueError("Need at least 4 paired real/fake samples to compute metrics robustly.")
 
-    real_features = _to_feature_matrix(real_samples[:paired_count])
-    fake_features = _to_feature_matrix(fake_samples[:paired_count])
+    metric_device = args.metrics_feature_device
+    if metric_device == "cuda" and not torch.cuda.is_available():
+        metric_device = "cpu"
 
-    results = compute_all_metrics(real_features, fake_features)
-
-
-    # this adds the clean fid computation and is by far the most time intensive
-
-    # THIS IS VERY TIME CONSUMING - if uncommented and computed it might increase the runtime by x20 times
-    # real_dir = os.path.join(out_dir, "real_images")
-    # fake_dir = os.path.join(out_dir, "fake_images")
-
-    # os.makedirs(real_dir, exist_ok=True)
-    # os.makedirs(fake_dir, exist_ok=True)
-
-    # for i, img in enumerate(real_samples[:paired_count]):
-    #     save_image(img, os.path.join(real_dir, f"{i}.png"))
-
-    # for i, img in enumerate(fake_samples[:paired_count]):
-    #     save_image(img, os.path.join(fake_dir, f"{i}.png"))
-
-    # try:
-    #     results["fid_clean"] = compute_fid_with_clean_fid(real_dir, fake_dir)
-    # except Exception as exc:
-    #     results["fid_clean"] = {"error": str(exc)}
+    # The metrics stack now uses Inception embeddings/probabilities instead of raw flattened pixels.
+    if args.verbose:
+        print(
+            f"[test_dcgan] evaluating metrics with paired_count={paired_count} "
+            f"feature_space={args.metrics_feature_space} feature_device={metric_device}",
+            flush=True,
+        )
+    results = compute_all_metrics(
+        real_samples=real_samples[:paired_count],
+        fake_samples=fake_samples[:paired_count],
+        config=MetricComputationConfig(
+            feature_space=args.metrics_feature_space,
+            feature_batch_size=int(args.metrics_feature_batch_size),
+            feature_device=metric_device,
+            bootstrap_samples=int(args.metrics_bootstrap_samples),
+            bootstrap_seed=int(args.metrics_bootstrap_seed),
+            bootstrap_alpha=float(args.metrics_bootstrap_alpha),
+            verbose=bool(args.verbose),
+        ),
+    )
 
 
     
@@ -207,8 +229,10 @@ def _evaluate_and_save_metrics(
     return results
 
 
+# entry point when running this script
 def main():
     args = parse_args()
+    set_deterministic_seed(seed=int(args.seed), verbose=bool(args.verbose), context="test_dcgan")
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     netg_path = Path(args.netG)
@@ -235,30 +259,37 @@ def main():
 
     generated = []
     remaining = args.num_samples
+    latent_rng = torch.Generator(device=device)
+    latent_rng.manual_seed(int(args.seed))
     with torch.no_grad():
         # generate in chunks to control memory usage for large num_samples
         while remaining > 0:
             this_batch = min(args.batch_size, remaining)
-            z = torch.randn(this_batch, args.latent_dim, 1, 1, device=device)
+            z = torch.randn(this_batch, args.latent_dim, 1, 1, device=device, generator=latent_rng)
             generated.append(generator(z).detach().cpu())
             remaining -= this_batch
 
     samples = torch.cat(generated, dim=0)
+    if args.verbose:
+        print(f"[test_dcgan] generated sample tensor shape={tuple(samples.shape)}", flush=True)
 
     perturbed_real_samples: torch.Tensor | None = None
     perturb_reference_targets: torch.Tensor | None = None
     perturb_reference_class_names: list[str] | None = None
+    perturbation_info: dict | None = None
     if perturbations_enabled(args):
         needs_real_reference = perturbation_needs_real_reference(args)
         needs_reference_targets = perturbation_needs_reference_targets(args)
         if needs_real_reference:
+            ref_dataset, ref_root, ref_image_size = _resolve_real_reference_request(args)
             reference_bundle = _load_real_reference(
-                dataset_name=args.metrics_dataset,
-                data_root=args.metrics_data_root,
-                image_size=args.image_size,
+                dataset_name=ref_dataset,
+                data_root=ref_root,
+                image_size=ref_image_size,
                 sample_count=max(int(samples.shape[0]), int(args.metrics_samples)),
                 download_if_missing=args.metrics_download_if_missing,
                 include_targets=needs_reference_targets,
+                seed=int(args.seed),
             )
             perturbed_real_samples = reference_bundle["samples"]
             perturb_reference_targets = reference_bundle["targets"]
@@ -284,19 +315,32 @@ def main():
         try:
             real_samples = perturbed_real_samples
             if real_samples is None or int(real_samples.shape[0]) < int(args.metrics_samples):
+                ref_dataset, ref_root, ref_image_size = _resolve_real_reference_request(args)
                 real_samples = _load_real_samples(
-                    dataset_name=args.metrics_dataset,
-                    data_root=args.metrics_data_root,
-                    image_size=args.image_size,
+                    dataset_name=ref_dataset,
+                    data_root=ref_root,
+                    image_size=ref_image_size,
                     sample_count=args.metrics_samples,
                     download_if_missing=args.metrics_download_if_missing,
+                    seed=int(args.seed),
                 )
             else:
                 real_samples = real_samples[: int(args.metrics_samples)]
+            if perturbation_info is not None:
+                evaluation_subset_size = min(int(real_samples.shape[0]), int(samples.shape[0]))
+                perturbation_info = annotate_memoisation_effective_count(
+                    perturbation_info=perturbation_info,
+                    evaluation_subset_size=evaluation_subset_size,
+                    verbose=bool(args.verbose),
+                    context="test_dcgan",
+                )
+                perturbation_path = out_dir / "perturbation_config.json"
+                perturbation_path.write_text(json.dumps(perturbation_info, indent=2), encoding="utf-8")
             metrics = _evaluate_and_save_metrics(
                 real_samples=real_samples,
                 fake_samples=samples,
                 out_dir=out_dir,
+                args=args,
             )
             print(f"Metric summary keys: {list(metrics.keys())}")
         except Exception as exc:

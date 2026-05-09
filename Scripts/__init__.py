@@ -1,1 +1,1 @@
-# Script package marker.
+# mark scripts as a package

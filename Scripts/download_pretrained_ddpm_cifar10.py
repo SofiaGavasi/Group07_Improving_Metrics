@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 
 
+# entry point when running this script
 def main():
     parser = argparse.ArgumentParser(description="Stage pretrained DDPM/DDIM checkpoint for CIFAR-10.")
     parser.add_argument("--output-dir", type=str, default="checkpoints/DDPM/CIFAR10")

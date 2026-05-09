@@ -8,6 +8,7 @@ from pathlib import Path
 from torchvision import datasets
 
 
+# entry point when running this script
 def main():
     parser = argparse.ArgumentParser(description="Download MNIST + CIFAR-10.")
     parser.add_argument("--data-root", type=str, default="data", help="Dataset root folder.")

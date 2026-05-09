@@ -10,6 +10,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from experiments import build_experiments_for_suite, default_experiment_base_overrides
+
+
+def _cuda_available() -> bool:
+    try:
+        import torch
+
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
+
 
 # ============================================================================
 #  CONFIGURATIONS
@@ -23,121 +34,147 @@ from typing import Any
 # - "test": run model test entrypoints (implemented + skeleton test scripts)
 # - "full": setup + train + test + smoke checks
 # - "smoke": run lightweight model/module smoke checks only
-PROFILE = "test"
+PROFILE = "test"  # Which pipeline profile to run when CUSTOM_STEPS is empty.
 
 
 # optional custom ordered steps. If non-empty, this overrides PROFILE.
 # example: ["prep_mnist_cifar10", "train_dcgan_cifar10", "smoke_models"]
-CUSTOM_STEPS = ["prep_mnist_cifar10"]
+CUSTOM_STEPS = ["prep_mnist_cifar10"]  # Exact step list override; non-empty ignores PROFILE.
 
 
 # execution behavior flags:
 # - RUN=False prints commands only (safe dry-run)
 # - RUN=True actually executes each planned command
-RUN = True
+RUN = True  # True executes commands; False only prints the generated commands.
 
 # if True, pipeline keeps going after a failed step
-CONTINUE_ON_ERROR = False
+CONTINUE_ON_ERROR = False  # True keeps running next steps/experiments after failures.
 
 # if True, training commands include --cuda (when supported by the target script)
-CUDA = False
+CUDA = _cuda_available()  # Adds --cuda to child scripts where supported.
+VERBOSE = True  # Enables detailed logs across pipeline/test/metric code paths.
 
 
 # shared roots used by pipeline scripts
-DATA_ROOT = "data"
-CHECKPOINTS_ROOT = "checkpoints"
-OUTPUTS_ROOT = "outputs"
+DATA_ROOT = "data"  # Root folder that contains datasets (MNIST/CIFAR10/CelebA/ChestXray14).
+CHECKPOINTS_ROOT = "checkpoints"  # Root folder for pretrained/downloaded model checkpoints.
+OUTPUTS_ROOT = "outputs"  # Root folder where run artifacts and reports are written.
 
 
 # training stuff:
-IMAGE_SIZE = 32
-DCGAN_EPOCHS = 1
-DCGAN_BATCH_SIZE = 64
-WGANGP_EPOCHS = 1
-WGANGP_BATCH_SIZE = 64
+IMAGE_SIZE = 32  # Training/test image size expected by model/data transforms.
+DCGAN_EPOCHS = 1  # Epochs for DCGAN training steps.
+DCGAN_BATCH_SIZE = 64  # Batch size for DCGAN training steps.
+WGANGP_EPOCHS = 1  # Epochs for WGAN-GP training steps.
+WGANGP_BATCH_SIZE = 64  # Batch size for WGAN-GP training steps.
 
 
 # test stuff:
-TEST_NUM_SAMPLES = 10000
-TEST_BATCH_SIZE = 64
+TEST_NUM_SAMPLES = 1280  # Number of fake samples generated per test script run.
+TEST_BATCH_SIZE = 64  # Generation batch size used in test scripts.
 
 
 # metric evaluation during test stage:
-EVAL_METRICS = True
-METRICS_SAMPLES = 10000
-METRICS_DOWNLOAD_IF_MISSING = False
+EVAL_METRICS = True  # Compute metrics after sample generation.
+METRICS_SAMPLES = 1280  # Real-reference sample count loaded for metric evaluation.
+METRICS_DOWNLOAD_IF_MISSING = False  # Allow dataset auto-download during metric eval if missing.
+METRICS_FEATURE_SPACE = "inception_v3"  # Feature backbone used for FID/KID/PRDC/IS.
+METRICS_FEATURE_BATCH_SIZE = 64  # Batch size for feature extraction.
+METRICS_FEATURE_DEVICE = "cuda" if CUDA else "cpu"  # Device for feature extraction: "cpu" or "cuda".
+METRICS_BOOTSTRAP_SAMPLES = 200  # Number of bootstrap resamples for confidence intervals (0 disables).
+METRICS_BOOTSTRAP_SEED = 10  # RNG seed for bootstrap reproducibility.
+METRICS_BOOTSTRAP_ALPHA = 0.05  # CI significance level (0.05 -> 95% CI).
 
 
 # perturbation controls:
-USE_PERTURBATIONS = False
+USE_PERTURBATIONS = False  # Master toggle for all perturbation logic.
 PERTURB_APPLY_TO = "fake"  # "fake", "real", "both"
 
 # degradation perturbation:
-PERTURB_DEGRADE = False
-PERTURB_DEGRADE_SEVERITY = 1  # 1..5
-PERTURB_DEGRADE_GAUSSIAN_NOISE = False
-PERTURB_DEGRADE_GAUSSIAN_BLUR = False
-PERTURB_DEGRADE_JPEG_COMPRESSION = False
+PERTURB_DEGRADE = False  # Enables image-quality degradation perturbation.
+PERTURB_DEGRADE_SEVERITY = 1  # Corruption severity level in [1..5].
+PERTURB_DEGRADE_GAUSSIAN_NOISE = False  # Include gaussian-noise corruption.
+PERTURB_DEGRADE_GAUSSIAN_BLUR = False  # Include gaussian-blur corruption.
+PERTURB_DEGRADE_JPEG_COMPRESSION = False  # Include JPEG-compression corruption.
 
 # memoisation perturbation:
-PERTURB_MEMOISATION = False
-PERTURB_MEMO_FRACTION = 0.1
-PERTURB_MEMO_SEED = 10
+PERTURB_MEMOISATION = False  # Enables memoisation perturbation (replace fake with real samples).
+PERTURB_MEMO_FRACTION = 0.1  # Fraction of fake samples to replace with real samples.
+PERTURB_MEMO_SEED = 10  # RNG seed for memoisation sample selection.
 
 # class-removal perturbation:
-PERTURB_CLASS_REMOVAL = True
-PERTURB_CLASS_REMOVAL_STRATEGY = "label"  # "label" or "kmeans"
-PERTURB_CLASS_REMOVAL_TARGETS = "Smiling"
-PERTURB_CLASS_REMOVAL_KMEANS_K = 8
-PERTURB_CLASS_REMOVAL_KMEANS_CACHE_PATH = ""
-PERTURB_CLASS_REMOVAL_KMEANS_RECREATE = False
-PERTURB_CLASS_REMOVAL_SEED = 10
-PERTURB_CLASS_REMOVAL_LABEL_THRESHOLD = 0.0
-PERTURB_CLASS_REMOVAL_MIN_KEPT = 4
+PERTURB_CLASS_REMOVAL = True  # Enables class-removal perturbation (simulate mode dropping).
+PERTURB_CLASS_REMOVAL_STRATEGY = "label"  # Selection strategy: "label" or "kmeans".
+PERTURB_CLASS_REMOVAL_TARGETS = "Smiling"  # Target labels/clusters to remove (comma-separated).
+PERTURB_CLASS_REMOVAL_KMEANS_K = 8  # Number of clusters when strategy="kmeans".
+PERTURB_CLASS_REMOVAL_KMEANS_CACHE_PATH = ""  # Optional path to cached KMeans assignments.
+PERTURB_CLASS_REMOVAL_KMEANS_RECREATE = False  # Recompute KMeans cache even if cache exists.
+PERTURB_CLASS_REMOVAL_SEED = 10  # RNG seed for stochastic selection operations.
+PERTURB_CLASS_REMOVAL_LABEL_THRESHOLD = 0.0  # Multi-label positive threshold.
+PERTURB_CLASS_REMOVAL_MIN_KEPT = 4  # Safety floor: minimum samples kept after filtering.
 
 # class-imbalance perturbation:
-PERTURB_CLASS_IMBALANCE = False
-PERTURB_CLASS_IMBALANCE_STRATEGY = "label"  # "label" or "kmeans"
-PERTURB_CLASS_IMBALANCE_TARGETS = ""
+PERTURB_CLASS_IMBALANCE = False  # Enables class-imbalance perturbation.
+PERTURB_CLASS_IMBALANCE_STRATEGY = "label"  # Selection strategy: "label" or "kmeans".
+PERTURB_CLASS_IMBALANCE_TARGETS = ""  # Target labels/clusters to downsample (comma-separated).
 # single ratio "0.3" or per-target list "0.2,0.6"
-PERTURB_CLASS_IMBALANCE_BALANCE = "0.5"
-PERTURB_CLASS_IMBALANCE_KMEANS_K = 8
-PERTURB_CLASS_IMBALANCE_KMEANS_CACHE_PATH = ""
-PERTURB_CLASS_IMBALANCE_KMEANS_RECREATE = False
-PERTURB_CLASS_IMBALANCE_SEED = 10
-PERTURB_CLASS_IMBALANCE_LABEL_THRESHOLD = 0.0
-PERTURB_CLASS_IMBALANCE_MIN_KEPT = 4
+PERTURB_CLASS_IMBALANCE_BALANCE = "0.5"  # Keep-ratio for target class (or per-target ratios list).
+PERTURB_CLASS_IMBALANCE_KMEANS_K = 8  # Number of clusters when strategy="kmeans".
+PERTURB_CLASS_IMBALANCE_KMEANS_CACHE_PATH = ""  # Optional path to cached KMeans assignments.
+PERTURB_CLASS_IMBALANCE_KMEANS_RECREATE = False  # Recompute KMeans cache even if cache exists.
+PERTURB_CLASS_IMBALANCE_SEED = 10  # RNG seed for imbalance sampling.
+PERTURB_CLASS_IMBALANCE_LABEL_THRESHOLD = 0.0  # Multi-label positive threshold.
+PERTURB_CLASS_IMBALANCE_MIN_KEPT = 4  # Safety floor: minimum samples kept after downsampling.
 # sample-size perturbation:
-PERTURB_SAMPLE_SIZE = False
-PERTURB_SAMPLE_SIZE_N = 1000
-PERTURB_SAMPLE_SIZE_SEED = 42
+PERTURB_SAMPLE_SIZE = False  # Enables sample-size perturbation.
+PERTURB_SAMPLE_SIZE_N = 30  # Number of samples kept after sample-size perturbation.
+PERTURB_SAMPLE_SIZE_SEED = 10  # RNG seed for sample-size selection.
+PERTURB_PREPROCESSING = False  # Enables preprocessing-variation perturbation.
+PERTURB_PREPROCESSING_VARIANT = "downsample_bilinear"  # Preprocessing variant name to apply.
+PERTURB_PREPROCESSING_SCALE = 0.75  # Scale factor used by preprocessing variants.
+PERTURB_DOMAIN_SHIFT = False  # Enables domain-shift perturbation (swap real-reference dataset).
+PERTURB_DOMAIN_SHIFT_DATASET = ""  # Domain-shift real-reference dataset name.
+PERTURB_DOMAIN_SHIFT_DATA_ROOT = ""  # Domain-shift dataset root path.
+PERTURB_DOMAIN_SHIFT_IMAGE_SIZE = 0  # Override image size for domain-shift reference (0 keeps default).
 
 # optional explicit checkpoint overrides for model test scripts
-DCGAN_TEST_NETG = ""
-WGANGP_TEST_GENERATOR = ""
-WGANGP_TEST_CRITIC = ""
-STUDIOGAN_TEST_CHECKPOINT = ""
-DDPM_TEST_CHECKPOINT = ""
-STYLEGAN2_TEST_CHECKPOINT = ""
+DCGAN_TEST_NETG = ""  # Optional explicit DCGAN generator checkpoint path.
+WGANGP_TEST_GENERATOR = ""  # Optional explicit WGAN-GP generator checkpoint path.
+WGANGP_TEST_CRITIC = ""  # Optional explicit WGAN-GP critic checkpoint path.
+STUDIOGAN_TEST_CHECKPOINT = ""  # Optional explicit StudioGAN checkpoint path.
+DDPM_TEST_CHECKPOINT = ""  # Optional explicit DDPM checkpoint path.
+STYLEGAN2_TEST_CHECKPOINT = ""  # Optional explicit StyleGAN2 checkpoint path.
 
 
 # strict test mode:
-STRICT_TESTS = False
+STRICT_TESTS = False  # True fails immediately on missing checkpoints/metric errors in test scripts.
 
 
 # dataset subset controls
-SUBSET_FRACTION: float | None = None
-SUBSET_MAX_SAMPLES: int | None = None
-SUBSET_SEED = 10
-SUBSET_STRATEGY = "random"
-SUBSET_INCLUDE_CLASSES = ""
-SUBSET_DROP_CLASSES = ""
+SUBSET_FRACTION: float | None = None  # Keep this fraction of dataset (None disables).
+SUBSET_MAX_SAMPLES: int | None = None  # Hard cap for dataset size after subsetting (None disables).
+SUBSET_SEED = 10  # RNG seed for subset selection.
+SUBSET_STRATEGY = "random"  # Subset strategy: "random" or "class_balanced".
+SUBSET_INCLUDE_CLASSES = ""  # Optional class filter include list (comma-separated).
+SUBSET_DROP_CLASSES = ""  # Optional class filter drop list (comma-separated).
 
-# Bootstrap
-BOOTSTRAP_RUNS = 5 # this is for initial testing, we need at least 30 
-USE_BOOTSTRAP= True
-DATASET_SIZE= 10000
-BOOTSTRAP_SAMPLES = 1000
+
+
+
+#______________________________________________________________________________
+# batch naming to keep large experiment campaigns easy to identify.
+BATCH_NAME = "final_dcgan_batch"  # Logical campaign name used in output/report paths.
+
+# active batch suite:
+# - "dcgan_pretrained_both" (default): runs both user-provided DCGAN checkpoints
+# - "dcgan_cifar10_pretrained": only CIFAR-10 checkpoint sweep
+# - "dcgan_mnist_pretrained": only MNIST checkpoint sweep
+# - "stylegan2_celeba": existing StyleGAN2/CelebA sweep
+EXPERIMENT_SUITE = "dcgan_mnist_pretrained"
+
+# explicit DCGAN checkpoints 
+DCGAN_CIFAR10_PRETRAINED_NETG = "netG_best.pth"
+DCGAN_MNIST_PRETRAINED_NETG = "netG_epoch_30.pth"
 
 
 # batch experiments:
@@ -146,419 +183,19 @@ BOOTSTRAP_SAMPLES = 1000
 # - each experiment gets a deterministic id
 # - completed experiments are skipped on re-run if report exists
 # - reports are written incrementally after each experiment
-SKIP_COMPLETED_EXPERIMENTS = True
-ENFORCE_TEST_ONLY_EXPERIMENTS = True
-REPORT_SUFFIX = "perturbation_tests"
-EXPERIMENT_BASE_OVERRIDES: dict[str, Any] = {
-    "USE_PERTURBATIONS": True,
-    "PERTURB_APPLY_TO": "fake",
-    "PERTURB_DEGRADE": False,
-    "PERTURB_DEGRADE_SEVERITY": 1,
-    "PERTURB_DEGRADE_GAUSSIAN_NOISE": False,
-    "PERTURB_DEGRADE_GAUSSIAN_BLUR": False,
-    "PERTURB_DEGRADE_JPEG_COMPRESSION": False,
-    "PERTURB_MEMOISATION": False,
-    "PERTURB_MEMO_FRACTION": 0.1,
-    "PERTURB_MEMO_SEED": 10,
-    "PERTURB_CLASS_REMOVAL": False,
-    "PERTURB_CLASS_REMOVAL_STRATEGY": "label",
-    "PERTURB_CLASS_REMOVAL_TARGETS": "",
-    "PERTURB_CLASS_REMOVAL_KMEANS_K": 8,
-    "PERTURB_CLASS_REMOVAL_KMEANS_CACHE_PATH": "",
-    "PERTURB_CLASS_REMOVAL_KMEANS_RECREATE": False,
-    "PERTURB_CLASS_REMOVAL_SEED": 10,
-    "PERTURB_CLASS_REMOVAL_LABEL_THRESHOLD": 0.0,
-    "PERTURB_CLASS_REMOVAL_MIN_KEPT": 4,
-    "PERTURB_CLASS_IMBALANCE": False,
-    "PERTURB_CLASS_IMBALANCE_STRATEGY": "label",
-    "PERTURB_CLASS_IMBALANCE_TARGETS": "",
-    "PERTURB_CLASS_IMBALANCE_BALANCE": "0.5",
-    "PERTURB_CLASS_IMBALANCE_KMEANS_K": 8,
-    "PERTURB_CLASS_IMBALANCE_KMEANS_CACHE_PATH": "",
-    "PERTURB_CLASS_IMBALANCE_KMEANS_RECREATE": False,
-    "PERTURB_CLASS_IMBALANCE_SEED": 10,
-    "PERTURB_CLASS_IMBALANCE_LABEL_THRESHOLD": 0.0,
-    "PERTURB_CLASS_IMBALANCE_MIN_KEPT": 4,
-    "PERTURB_SAMPLE_SIZE": False,
-    "PERTURB_SAMPLE_SIZE_N": 1000,
-    "PERTURB_SAMPLE_SIZE_SEED": 42,
-    "SUBSET_SEED": 10,
-    "SUBSET_STRATEGY":"random",
-}
+SKIP_COMPLETED_EXPERIMENTS = True  # Skip experiments already marked completed in report JSON.
+ENFORCE_TEST_ONLY_EXPERIMENTS = True  # Prevent non-test steps in EXPERIMENTS entries.
+REPORT_SUFFIX = "perturbation_tests"  # Report filename suffix for batch summary JSON.
+# Baseline overrides are now defined in experiments.py for easier suite maintenance.
+EXPERIMENT_BASE_OVERRIDES: dict[str, Any] = default_experiment_base_overrides()
 
-
-# full StyleGAN2/CelebA perturbation experiments
-EXPERIMENTS: list[dict[str, Any]] = [
-    # baseline:
-    {
-        "name": "baseline_no_perturbation",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "USE_PERTURBATIONS": False,
-        },
-    },
-    # degradation-only sweeps:
-    {
-        "name": "degrade_noise_sev1",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_DEGRADE": True,
-            "PERTURB_DEGRADE_SEVERITY": 1,
-            "PERTURB_DEGRADE_GAUSSIAN_NOISE": True,
-        },
-    },
-    {
-        "name": "degrade_noise_sev3",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_DEGRADE": True,
-            "PERTURB_DEGRADE_SEVERITY": 3,
-            "PERTURB_DEGRADE_GAUSSIAN_NOISE": True,
-        },
-    },
-    {
-        "name": "degrade_noise_sev5",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_DEGRADE": True,
-            "PERTURB_DEGRADE_SEVERITY": 5,
-            "PERTURB_DEGRADE_GAUSSIAN_NOISE": True,
-        },
-    },
-    {
-        "name": "degrade_blur_sev1",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_DEGRADE": True,
-            "PERTURB_DEGRADE_SEVERITY": 1,
-            "PERTURB_DEGRADE_GAUSSIAN_BLUR": True,
-        },
-    },
-    {
-        "name": "degrade_blur_sev3",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_DEGRADE": True,
-            "PERTURB_DEGRADE_SEVERITY": 3,
-            "PERTURB_DEGRADE_GAUSSIAN_BLUR": True,
-        },
-    },
-    {
-        "name": "degrade_blur_sev5",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_DEGRADE": True,
-            "PERTURB_DEGRADE_SEVERITY": 5,
-            "PERTURB_DEGRADE_GAUSSIAN_BLUR": True,
-        },
-    },
-    {
-        "name": "degrade_jpeg_sev1",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_DEGRADE": True,
-            "PERTURB_DEGRADE_SEVERITY": 1,
-            "PERTURB_DEGRADE_JPEG_COMPRESSION": True,
-        },
-    },
-    {
-        "name": "degrade_jpeg_sev3",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_DEGRADE": True,
-            "PERTURB_DEGRADE_SEVERITY": 3,
-            "PERTURB_DEGRADE_JPEG_COMPRESSION": True,
-        },
-    },
-    {
-        "name": "degrade_jpeg_sev5",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_DEGRADE": True,
-            "PERTURB_DEGRADE_SEVERITY": 5,
-            "PERTURB_DEGRADE_JPEG_COMPRESSION": True,
-        },
-    },
-    {
-        "name": "degrade_all_sev3",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_DEGRADE": True,
-            "PERTURB_DEGRADE_SEVERITY": 3,
-            "PERTURB_DEGRADE_GAUSSIAN_NOISE": True,
-            "PERTURB_DEGRADE_GAUSSIAN_BLUR": True,
-            "PERTURB_DEGRADE_JPEG_COMPRESSION": True,
-        },
-    },
-    # memoisation-only sweeps:
-    {
-        "name": "memo_frac_05pct",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_MEMOISATION": True,
-            "PERTURB_MEMO_FRACTION": 0.05,
-            "PERTURB_MEMO_SEED": 10,
-        },
-    },
-    {
-        "name": "memo_frac_15pct",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_MEMOISATION": True,
-            "PERTURB_MEMO_FRACTION": 0.15,
-            "PERTURB_MEMO_SEED": 10,
-        },
-    },
-    {
-        "name": "memo_frac_30pct",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_MEMOISATION": True,
-            "PERTURB_MEMO_FRACTION": 0.30,
-            "PERTURB_MEMO_SEED": 10,
-        },
-    },
-    # class-removal-only sweeps (CelebA is multi-label):
-    {
-        "name": "class_removal_label_smiling",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_CLASS_REMOVAL": True,
-            "PERTURB_CLASS_REMOVAL_STRATEGY": "label",
-            "PERTURB_CLASS_REMOVAL_TARGETS": "Smiling",
-            "PERTURB_CLASS_REMOVAL_SEED": 10,
-            "PERTURB_CLASS_REMOVAL_LABEL_THRESHOLD": 0.0,
-        },
-    },
-    {
-        "name": "class_removal_label_male",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_CLASS_REMOVAL": True,
-            "PERTURB_CLASS_REMOVAL_STRATEGY": "label",
-            "PERTURB_CLASS_REMOVAL_TARGETS": "Male",
-            "PERTURB_CLASS_REMOVAL_SEED": 10,
-            "PERTURB_CLASS_REMOVAL_LABEL_THRESHOLD": 0.0,
-        },
-    },
-    {
-        "name": "class_removal_kmeans_k8_cluster0",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_CLASS_REMOVAL": True,
-            "PERTURB_CLASS_REMOVAL_STRATEGY": "kmeans",
-            "PERTURB_CLASS_REMOVAL_KMEANS_K": 8,
-            "PERTURB_CLASS_REMOVAL_TARGETS": "0",
-            "PERTURB_CLASS_REMOVAL_SEED": 10,
-        },
-    },
-    {
-        "name": "class_removal_kmeans_k8_cluster3",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_CLASS_REMOVAL": True,
-            "PERTURB_CLASS_REMOVAL_STRATEGY": "kmeans",
-            "PERTURB_CLASS_REMOVAL_KMEANS_K": 8,
-            "PERTURB_CLASS_REMOVAL_TARGETS": "3",
-            "PERTURB_CLASS_REMOVAL_SEED": 10,
-        },
-    },
-    {
-        "name": "class_removal_kmeans_k12_cluster1",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_CLASS_REMOVAL": True,
-            "PERTURB_CLASS_REMOVAL_STRATEGY": "kmeans",
-            "PERTURB_CLASS_REMOVAL_KMEANS_K": 12,
-            "PERTURB_CLASS_REMOVAL_TARGETS": "1",
-            "PERTURB_CLASS_REMOVAL_SEED": 10,
-        },
-    },
-    # class-imbalance-only sweeps (CelebA multi-label + kmeans variants):
-    {
-        "name": "class_imbalance_label_smiling_20pct",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_CLASS_IMBALANCE": True,
-            "PERTURB_CLASS_IMBALANCE_STRATEGY": "label",
-            "PERTURB_CLASS_IMBALANCE_TARGETS": "Smiling",
-            "PERTURB_CLASS_IMBALANCE_BALANCE": "0.2",
-            "PERTURB_CLASS_IMBALANCE_SEED": 10,
-        },
-    },
-    {
-        "name": "class_imbalance_label_smiling_40pct",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_CLASS_IMBALANCE": True,
-            "PERTURB_CLASS_IMBALANCE_STRATEGY": "label",
-            "PERTURB_CLASS_IMBALANCE_TARGETS": "Smiling",
-            "PERTURB_CLASS_IMBALANCE_BALANCE": "0.4",
-            "PERTURB_CLASS_IMBALANCE_SEED": 10,
-        },
-    },
-    {
-        "name": "class_imbalance_label_smiling_60pct",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_CLASS_IMBALANCE": True,
-            "PERTURB_CLASS_IMBALANCE_STRATEGY": "label",
-            "PERTURB_CLASS_IMBALANCE_TARGETS": "Smiling",
-            "PERTURB_CLASS_IMBALANCE_BALANCE": "0.6",
-            "PERTURB_CLASS_IMBALANCE_SEED": 10,
-        },
-    },
-    {
-        "name": "class_imbalance_kmeans_k8_cluster0_30pct",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_CLASS_IMBALANCE": True,
-            "PERTURB_CLASS_IMBALANCE_STRATEGY": "kmeans",
-            "PERTURB_CLASS_IMBALANCE_KMEANS_K": 8,
-            "PERTURB_CLASS_IMBALANCE_TARGETS": "0",
-            "PERTURB_CLASS_IMBALANCE_BALANCE": "0.3",
-            "PERTURB_CLASS_IMBALANCE_SEED": 10,
-        },
-    },
-    {
-        "name": "class_imbalance_kmeans_k8_cluster3_50pct",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_CLASS_IMBALANCE": True,
-            "PERTURB_CLASS_IMBALANCE_STRATEGY": "kmeans",
-            "PERTURB_CLASS_IMBALANCE_KMEANS_K": 8,
-            "PERTURB_CLASS_IMBALANCE_TARGETS": "3",
-            "PERTURB_CLASS_IMBALANCE_BALANCE": "0.5",
-            "PERTURB_CLASS_IMBALANCE_SEED": 10,
-        },
-    },
-    {
-        "name": "class_imbalance_kmeans_k12_cluster1_40pct",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_CLASS_IMBALANCE": True,
-            "PERTURB_CLASS_IMBALANCE_STRATEGY": "kmeans",
-            "PERTURB_CLASS_IMBALANCE_KMEANS_K": 12,
-            "PERTURB_CLASS_IMBALANCE_TARGETS": "1",
-            "PERTURB_CLASS_IMBALANCE_BALANCE": "0.4",
-            "PERTURB_CLASS_IMBALANCE_SEED": 10,
-        },
-    },
-        {
-        "name": "sample_size_1000",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_SAMPLE_SIZE": True,
-            "PERTURB_SAMPLE_SIZE_N": 1000,
-            "PERTURB_SAMPLE_SIZE_SEED": 42,
-            "PERTURB_APPLY_TO": "both",
-        },
-    },
-    {
-        "name": "sample_size_5000",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_SAMPLE_SIZE": True,
-            "PERTURB_SAMPLE_SIZE_N": 5000,
-            "PERTURB_SAMPLE_SIZE_SEED": 42,
-            "PERTURB_APPLY_TO": "both",
-        },
-    },
-    {
-        "name": "sample_size_10000",
-        "steps": ["test_stylegan2_celeba"],
-        "model_name": "stylegan2",
-        "dataset_name": "celeba",
-        "overrides": {
-            **EXPERIMENT_BASE_OVERRIDES,
-            "PERTURB_SAMPLE_SIZE": True,
-            "PERTURB_SAMPLE_SIZE_N": 10000,
-            "PERTURB_SAMPLE_SIZE_SEED": 42,
-            "PERTURB_APPLY_TO": "both",
-        },
-    },
-]
+EXPERIMENTS: list[dict[str, Any]] = build_experiments_for_suite(
+    experiment_suite=EXPERIMENT_SUITE,
+    test_num_samples=TEST_NUM_SAMPLES,
+    dcgan_cifar10_pretrained_netg=DCGAN_CIFAR10_PRETRAINED_NETG,
+    dcgan_mnist_pretrained_netg=DCGAN_MNIST_PRETRAINED_NETG,
+    experiment_base_overrides=EXPERIMENT_BASE_OVERRIDES,
+)
 
 
 
@@ -566,6 +203,7 @@ TEST_STEP_METADATA: dict[str, tuple[str, str, str]] = {
     "test_dcgan_cifar10": ("dcgan", "cifar10", "dcgan_cifar10_test"),
     "test_dcgan_mnist": ("dcgan", "mnist", "dcgan_mnist_test"),
     "test_wgangp_cifar10": ("wgangp", "cifar10", "wgangp_cifar10_test"),
+    "test_wgangp_chestxray14": ("wcgan", "chestxray14", "wgangp_chestxray14_test"),
     "test_studiogan_cifar10": ("studiogan", "cifar10", "studiogan_cifar10_test"),
     "test_ddpm_cifar10": ("ddpm", "cifar10", "ddpm_cifar10_test"),
     "test_stylegan2_celeba": ("stylegan2", "celeba", "stylegan2_celeba_test"),
@@ -579,6 +217,7 @@ def _default_settings() -> dict[str, Any]:
         "RUN": RUN,
         "CONTINUE_ON_ERROR": CONTINUE_ON_ERROR,
         "CUDA": CUDA,
+        "VERBOSE": VERBOSE,
         "DATA_ROOT": DATA_ROOT,
         "CHECKPOINTS_ROOT": CHECKPOINTS_ROOT,
         "OUTPUTS_ROOT": OUTPUTS_ROOT,
@@ -592,6 +231,12 @@ def _default_settings() -> dict[str, Any]:
         "EVAL_METRICS": EVAL_METRICS,
         "METRICS_SAMPLES": METRICS_SAMPLES,
         "METRICS_DOWNLOAD_IF_MISSING": METRICS_DOWNLOAD_IF_MISSING,
+        "METRICS_FEATURE_SPACE": METRICS_FEATURE_SPACE,
+        "METRICS_FEATURE_BATCH_SIZE": METRICS_FEATURE_BATCH_SIZE,
+        "METRICS_FEATURE_DEVICE": METRICS_FEATURE_DEVICE,
+        "METRICS_BOOTSTRAP_SAMPLES": METRICS_BOOTSTRAP_SAMPLES,
+        "METRICS_BOOTSTRAP_SEED": METRICS_BOOTSTRAP_SEED,
+        "METRICS_BOOTSTRAP_ALPHA": METRICS_BOOTSTRAP_ALPHA,
         "USE_PERTURBATIONS": USE_PERTURBATIONS,
         "PERTURB_APPLY_TO": PERTURB_APPLY_TO,
         "PERTURB_DEGRADE": PERTURB_DEGRADE,
@@ -624,6 +269,13 @@ def _default_settings() -> dict[str, Any]:
         "PERTURB_SAMPLE_SIZE": PERTURB_SAMPLE_SIZE,
         "PERTURB_SAMPLE_SIZE_N": PERTURB_SAMPLE_SIZE_N,
         "PERTURB_SAMPLE_SIZE_SEED": PERTURB_SAMPLE_SIZE_SEED,
+        "PERTURB_PREPROCESSING": PERTURB_PREPROCESSING,
+        "PERTURB_PREPROCESSING_VARIANT": PERTURB_PREPROCESSING_VARIANT,
+        "PERTURB_PREPROCESSING_SCALE": PERTURB_PREPROCESSING_SCALE,
+        "PERTURB_DOMAIN_SHIFT": PERTURB_DOMAIN_SHIFT,
+        "PERTURB_DOMAIN_SHIFT_DATASET": PERTURB_DOMAIN_SHIFT_DATASET,
+        "PERTURB_DOMAIN_SHIFT_DATA_ROOT": PERTURB_DOMAIN_SHIFT_DATA_ROOT,
+        "PERTURB_DOMAIN_SHIFT_IMAGE_SIZE": PERTURB_DOMAIN_SHIFT_IMAGE_SIZE,
         "DCGAN_TEST_NETG": DCGAN_TEST_NETG,
         "WGANGP_TEST_GENERATOR": WGANGP_TEST_GENERATOR,
         "WGANGP_TEST_CRITIC": WGANGP_TEST_CRITIC,
@@ -637,6 +289,7 @@ def _default_settings() -> dict[str, Any]:
         "SUBSET_STRATEGY": SUBSET_STRATEGY,
         "SUBSET_INCLUDE_CLASSES": SUBSET_INCLUDE_CLASSES,
         "SUBSET_DROP_CLASSES": SUBSET_DROP_CLASSES,
+        "BATCH_NAME": BATCH_NAME,
     }
 
 
@@ -670,6 +323,8 @@ def _perturbations_enabled(settings: dict[str, Any]) -> bool:
         or settings["PERTURB_CLASS_REMOVAL"]
         or settings["PERTURB_CLASS_IMBALANCE"]
         or settings["PERTURB_SAMPLE_SIZE"]
+        or settings["PERTURB_PREPROCESSING"]
+        or settings["PERTURB_DOMAIN_SHIFT"]
     )
 
 
@@ -747,6 +402,15 @@ def _append_perturbation_args(cmd: list[str], settings: dict[str, Any]) -> None:
         cmd.append("--perturb-sample-size")
         cmd.extend(["--perturb-sample-size-n", str(settings["PERTURB_SAMPLE_SIZE_N"])])
         cmd.extend(["--perturb-sample-size-seed", str(settings["PERTURB_SAMPLE_SIZE_SEED"])])
+    if settings["PERTURB_PREPROCESSING"]:
+        cmd.append("--perturb-preprocessing")
+        cmd.extend(["--perturb-preprocessing-variant", str(settings["PERTURB_PREPROCESSING_VARIANT"])])
+        cmd.extend(["--perturb-preprocessing-scale", str(settings["PERTURB_PREPROCESSING_SCALE"])])
+    if settings["PERTURB_DOMAIN_SHIFT"]:
+        cmd.append("--perturb-domain-shift")
+        cmd.extend(["--perturb-domain-shift-dataset", str(settings["PERTURB_DOMAIN_SHIFT_DATASET"])])
+        cmd.extend(["--perturb-domain-shift-data-root", str(settings["PERTURB_DOMAIN_SHIFT_DATA_ROOT"])])
+        cmd.extend(["--perturb-domain-shift-image-size", str(settings["PERTURB_DOMAIN_SHIFT_IMAGE_SIZE"])])
 
 
 def _build_pipeline_command(pipeline_script: Path, settings: dict[str, Any]) -> list[str]:
@@ -777,6 +441,18 @@ def _build_pipeline_command(pipeline_script: Path, settings: dict[str, Any]) -> 
         str(settings["TEST_BATCH_SIZE"]),
         "--metrics-samples",
         str(settings["METRICS_SAMPLES"]),
+        "--metrics-feature-space",
+        str(settings["METRICS_FEATURE_SPACE"]),
+        "--metrics-feature-batch-size",
+        str(settings["METRICS_FEATURE_BATCH_SIZE"]),
+        "--metrics-feature-device",
+        str(settings["METRICS_FEATURE_DEVICE"]),
+        "--metrics-bootstrap-samples",
+        str(settings["METRICS_BOOTSTRAP_SAMPLES"]),
+        "--metrics-bootstrap-seed",
+        str(settings["METRICS_BOOTSTRAP_SEED"]),
+        "--metrics-bootstrap-alpha",
+        str(settings["METRICS_BOOTSTRAP_ALPHA"]),
         "--subset-seed",
         str(settings["SUBSET_SEED"]),
         "--subset-strategy",
@@ -821,6 +497,8 @@ def _build_pipeline_command(pipeline_script: Path, settings: dict[str, Any]) -> 
 
     if settings["CUDA"]:
         cmd.append("--cuda")
+    if settings["VERBOSE"]:
+        cmd.append("--verbose")
     if settings["STRICT_TESTS"]:
         cmd.append("--strict-tests")
     if settings["RUN"]:
@@ -889,17 +567,15 @@ def _resolve_experiment_settings(
     dataset_name = str(experiment.get("dataset_name", "")).strip() or inferred_dataset
 
     experiment_name = str(experiment.get("name", "")).strip() or f"experiment_{index:03d}"
-    folder_name = _safe_slug(experiment.get("name", "unnamed"))
-
-
     explicit_output_root = ("outputs_root" in experiment) or ("OUTPUTS_ROOT" in overrides)
     if not explicit_output_root:
+        batch_slug = _safe_slug(str(settings.get("BATCH_NAME", "default_batch")))
         settings["OUTPUTS_ROOT"] = str(
             Path(str(base_settings["OUTPUTS_ROOT"]))
             / "batch_runs"
+            / batch_slug
             / f"{_safe_slug(model_name)}_{_safe_slug(dataset_name)}"
             / _safe_slug(experiment_name)
-            / folder_name
         )
 
     return experiment_name, model_name, dataset_name, settings, overrides
@@ -925,7 +601,10 @@ def _build_experiment_id(
 
 
 def _report_path(base_output_root: Path, model_name: str, dataset_name: str) -> Path:
-    filename = f"{_safe_slug(model_name)}_{_safe_slug(dataset_name)}_{REPORT_SUFFIX}.json"
+    filename = (
+        f"{_safe_slug(str(BATCH_NAME))}_"
+        f"{_safe_slug(model_name)}_{_safe_slug(dataset_name)}_{REPORT_SUFFIX}.json"
+    )
     return base_output_root / filename
 
 
@@ -1066,125 +745,77 @@ def _run_batch(repo_root: Path, pipeline_script: Path, base_settings: dict[str, 
     failed_experiments: list[str] = []
     skipped_count = 0
 
-    dataset_size= DATASET_SIZE
-    num_bootstraps = BOOTSTRAP_RUNS if USE_BOOTSTRAP else 1
-    bootstrap_size = BOOTSTRAP_SAMPLES
-    total_experiments = len(EXPERIMENTS)
-    
-    print(f"Running batch: {total_experiments} experiments with {num_bootstraps} bootstraps each.", flush=True)
+    print(
+        f"Running batch '{base_settings.get('BATCH_NAME', BATCH_NAME)}' with {len(EXPERIMENTS)} experiments.",
+        flush=True,
+    )
 
-
-
-    for exp_idx, exp in enumerate(EXPERIMENTS, 1):
-        all_runs_metrics = []
-        overall_exit_code = 0
+    for idx, experiment in enumerate(EXPERIMENTS, start=1):
         started_at = datetime.now(timezone.utc)
-        
-        # original data set 
-        original_exp = copy.deepcopy(exp)
-        original_exp['name'] = f"{exp.get('name')}_original"
-        original_exp.setdefault('overrides', {}).update({
-            "METRICS_SAMPLES": dataset_size,
-            "TEST_NUM_SAMPLES": dataset_size,
-            "SUBSET_MAX_SAMPLES": None,"SUBSET_FRACTION": None})
-        
-        name, model_name, dataset_name, settings_original, overrides_original = _resolve_experiment_settings(
-                base_settings=base_settings,
-                experiment=original_exp,
-                index=exp_idx,
-            )
-        print(f"\n Running for whole dataset (N={dataset_size}) for {name}")        
-        if settings_original["RUN"]:
-            cmd_original = _build_pipeline_command(pipeline_script, settings_original)
-            subprocess.run(cmd_original, cwd=str(repo_root), check=False)
-        
-        original_output = _collect_test_outputs(settings_original)
+        name, model_name, dataset_name, settings, overrides = _resolve_experiment_settings(
+            base_settings=base_settings,
+            experiment=experiment,
+            index=idx,
+        )
 
+        exp_id = _build_experiment_id(
+            experiment_name=name,
+            model_name=model_name,
+            dataset_name=dataset_name,
+            settings=settings,
+            overrides=overrides,
+        )
+        cmd = _build_pipeline_command(pipeline_script=pipeline_script, settings=settings)
 
-        current_exp_id = None 
-        current_cmd = []
+        report_path = _report_path(repo_root / str(base_settings["OUTPUTS_ROOT"]), model_name, dataset_name)
+        report = reports_cache.get(report_path)
+        if report is None:
+            report = _load_report(report_path, model_name=model_name, dataset_name=dataset_name)
+            reports_cache[report_path] = report
 
-        # for the bootstrap 
-        for boot_idx in range(num_bootstraps):
-            bootstrap_exp = copy.deepcopy(exp)
-            if USE_BOOTSTRAP:
-                bootstrap_exp['name'] = f"{exp.get('name', 'unnamed')}_boot_{boot_idx:03d}"
-                bootstrap_exp.setdefault('overrides', {}).update({
-                    "METRICS_SAMPLES": bootstrap_size,
-                    "TEST_NUM_SAMPLES": bootstrap_size,
-                    "SUBSET_MAX_SAMPLES": bootstrap_size,
-                    "SUBSET_SEED": boot_idx, 
-                    "SUBSET_STRATEGY": "random"
-                    })
-                
-            name, model_name, dataset_name, settings, overrides = _resolve_experiment_settings(
-                base_settings=base_settings,
-                experiment=bootstrap_exp,
-                index=exp_idx,
-            )
+        existing = _index_by_experiment_id(report).get(exp_id)
+        if settings["RUN"] and SKIP_COMPLETED_EXPERIMENTS and existing and _is_completed_entry(existing):
+            print(f"Skipping completed experiment {idx}/{len(EXPERIMENTS)}: {name} ({exp_id})", flush=True)
+            skipped_count += 1
+            continue
 
-            current_exp_id = _build_experiment_id(
-                experiment_name=exp.get('name', name),
-                model_name=model_name,
-                dataset_name=dataset_name,
-                settings=settings,
-                overrides=overrides,
-            )
+        print(f"\nExperiment {idx}/{len(EXPERIMENTS)}: {name}", flush=True)
+        print(" ".join(cmd), flush=True)
 
-            current_cmd = _build_pipeline_command(pipeline_script, settings)
+        exit_code = 0
+        if settings["RUN"]:
+            completed = subprocess.run(cmd, cwd=str(repo_root), check=False)
+            exit_code = int(completed.returncode)
 
-            report_path = _report_path(repo_root / str(base_settings["OUTPUTS_ROOT"]), model_name, dataset_name)
-            report = reports_cache.get(report_path)
-            if report is None:
-                report = _load_report(report_path, model_name=model_name, dataset_name=dataset_name)
-                reports_cache[report_path] = report
+        status = "completed" if exit_code == 0 else "failed"
+        entry = {
+            "experiment_id": exp_id,
+            "name": name,
+            "status": status,
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "started_at_utc": started_at.isoformat(),
+            "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+            "model_name": model_name,
+            "dataset_name": dataset_name,
+            "batch_name": str(base_settings.get("BATCH_NAME", BATCH_NAME)),
+            "profile": str(settings["PROFILE"]),
+            "steps": _to_str_list(settings["CUSTOM_STEPS"]),
+            "output_root": str(settings["OUTPUTS_ROOT"]),
+            "exit_code": exit_code,
+            "command": " ".join(cmd),
+            "overrides": overrides,
+            "test_outputs": _collect_test_outputs(settings) if settings["RUN"] else [],
+            "metrics_expected": bool(settings["EVAL_METRICS"]),
+        }
+        entry["metrics_available"] = _entry_has_metrics(entry) if settings["RUN"] else False
 
-            existing = _index_by_experiment_id(report).get(exp_idx)
-            if settings["RUN"] and SKIP_COMPLETED_EXPERIMENTS and existing and _is_completed_entry(existing) and boot_idx == 0:
-                print(f"Skipping completed experiment {exp_idx}/{total_experiments}: {name} ({exp_idx})", flush=True)
-                skipped_count += 1
+        _upsert_report_entry(report, entry)
+        _write_report(report_path, report)
+
+        if exit_code != 0:
+            failed_experiments.append(f"{name} ({exp_id})")
+            if not settings["CONTINUE_ON_ERROR"]:
                 break
-
-            cmd = _build_pipeline_command(pipeline_script=pipeline_script, settings=settings)
-            print(f"\nExperiment {exp_idx}/{total_experiments} | Bootstrap {boot_idx+1}/{num_bootstraps}: {name}", flush=True)
-
-            if settings["RUN"]:
-                print(f"Bootstrap {boot_idx+1}/{num_bootstraps}: {name}")
-                completed = subprocess.run(current_cmd, cwd=str(repo_root), check=False)
-                if completed.returncode != 0:
-                    overall_exit_code = int(completed.returncode)
-                all_runs_metrics.append(_collect_test_outputs(settings))
-
-        else:
-            status = "completed" if overall_exit_code == 0 else "failed"
-            entry = {
-                "experiment_id": current_exp_id,
-                "name": exp.get('name', name),
-                "status": status,
-                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-                "started_at_utc": started_at.isoformat(),
-                "finished_at_utc": datetime.now(timezone.utc).isoformat(),
-                "model_name": model_name,
-                "dataset_name": dataset_name,
-                "profile": str(settings["PROFILE"]),
-                "steps": _to_str_list(settings["CUSTOM_STEPS"]),
-                "output_root": str(settings["OUTPUTS_ROOT"]),
-                "exit_code": overall_exit_code,
-                "command": " ".join(cmd),
-                "overrides": exp.get("overrides", {}),
-                "all_bootstrap_outputs": all_runs_metrics,
-                "test_outputs": original_output,
-                "metrics_expected": bool(settings["EVAL_METRICS"]),
-            }
-            entry["metrics_available"] = _entry_has_metrics(entry) if settings["RUN"] else False
-            
-            _upsert_report_entry(report, entry)
-            _write_report(report_path, report)
-
-            if overall_exit_code != 0:
-                failed_experiments.append(f"{name} ({exp_idx})")
-                if not settings["CONTINUE_ON_ERROR"]:
-                    return
 
     print("\nBatch summary:", flush=True)
     print(f"- total configured experiments: {len(EXPERIMENTS)}", flush=True)

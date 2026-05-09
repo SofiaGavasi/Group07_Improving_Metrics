@@ -115,6 +115,31 @@ def step_train_dcgan_cifar10(args: argparse.Namespace):
         str(Path(args.outputs_root) / "dcgan_cifar10"),
     ]
     append_subset_args(cmd, args)
+    append_verbose_arg(cmd, args)
+    if args.cuda:
+        cmd.append("--cuda")
+    return cmd
+
+
+def step_train_dcgan_mnist(args: argparse.Namespace):
+    cmd = [
+        PYTHON_EXE,
+        str(SCRIPTS_DIR / "train_dcgan.py"),
+        "--dataset",
+        "mnist",
+        "--data-root",
+        str(Path(args.data_root) / "MNIST"),
+        "--epochs",
+        str(args.dcgan_epochs),
+        "--batch-size",
+        str(args.dcgan_batch_size),
+        "--image-size",
+        str(args.image_size),
+        "--outf",
+        str(Path(args.outputs_root) / "dcgan_mnist"),
+    ]
+    append_subset_args(cmd, args)
+    append_verbose_arg(cmd, args)
     if args.cuda:
         cmd.append("--cuda")
     return cmd
@@ -138,6 +163,31 @@ def step_train_wgangp_cifar10(args: argparse.Namespace):
         str(Path(args.outputs_root) / "wgangp_cifar10"),
     ]
     append_subset_args(cmd, args)
+    append_verbose_arg(cmd, args)
+    if args.cuda:
+        cmd.append("--cuda")
+    return cmd
+
+
+def step_train_wgangp_chestxray14(args: argparse.Namespace):
+    cmd = [
+        PYTHON_EXE,
+        str(SCRIPTS_DIR / "train_wgangp.py"),
+        "--dataset",
+        "chestxray14",
+        "--data-root",
+        str(Path(args.data_root) / "ChestXray14"),
+        "--epochs",
+        str(args.wgangp_epochs),
+        "--batch-size",
+        str(args.wgangp_batch_size),
+        "--image-size",
+        str(args.image_size),
+        "--out-dir",
+        str(Path(args.outputs_root) / "wgangp_chestxray14"),
+    ]
+    append_subset_args(cmd, args)
+    append_verbose_arg(cmd, args)
     if args.cuda:
         cmd.append("--cuda")
     return cmd
@@ -178,12 +228,25 @@ def step_test_dcgan_cifar10(args: argparse.Namespace):
                 str(Path(args.data_root) / "CIFAR10"),
                 "--metrics-samples",
                 str(args.metrics_samples),
+                "--metrics-feature-space",
+                str(args.metrics_feature_space),
+                "--metrics-feature-batch-size",
+                str(args.metrics_feature_batch_size),
+                "--metrics-feature-device",
+                str(args.metrics_feature_device),
+                "--metrics-bootstrap-samples",
+                str(args.metrics_bootstrap_samples),
+                "--metrics-bootstrap-seed",
+                str(args.metrics_bootstrap_seed),
+                "--metrics-bootstrap-alpha",
+                str(args.metrics_bootstrap_alpha),
             ]
         )
         if args.metrics_download_if_missing:
             cmd.append("--metrics-download-if-missing")
     if args.cuda:
         cmd.append("--cuda")
+    append_verbose_arg(cmd, args)
     append_perturbation_args(cmd, args)
     if args.strict_tests:
         cmd.append("--strict")
@@ -218,12 +281,25 @@ def step_test_dcgan_mnist(args: argparse.Namespace):
                 str(Path(args.data_root) / "MNIST"),
                 "--metrics-samples",
                 str(args.metrics_samples),
+                "--metrics-feature-space",
+                str(args.metrics_feature_space),
+                "--metrics-feature-batch-size",
+                str(args.metrics_feature_batch_size),
+                "--metrics-feature-device",
+                str(args.metrics_feature_device),
+                "--metrics-bootstrap-samples",
+                str(args.metrics_bootstrap_samples),
+                "--metrics-bootstrap-seed",
+                str(args.metrics_bootstrap_seed),
+                "--metrics-bootstrap-alpha",
+                str(args.metrics_bootstrap_alpha),
             ]
         )
         if args.metrics_download_if_missing:
             cmd.append("--metrics-download-if-missing")
     if args.cuda:
         cmd.append("--cuda")
+    append_verbose_arg(cmd, args)
     append_perturbation_args(cmd, args)
     if args.strict_tests:
         cmd.append("--strict")
@@ -248,13 +324,103 @@ def step_test_wgangp_cifar10(args: argparse.Namespace):
         str(Path(args.outputs_root) / "wgangp_cifar10_test"),
         "--num-samples",
         str(args.test_num_samples),
+        "--batch-size",
+        str(args.test_batch_size),
         "--image-size",
         str(args.image_size),
         "--channels",
         "3",
     ]
+    if args.eval_metrics:
+        cmd.extend(
+            [
+                "--eval-metrics",
+                "--metrics-dataset",
+                "cifar10",
+                "--metrics-data-root",
+                str(Path(args.data_root) / "CIFAR10"),
+                "--metrics-samples",
+                str(args.metrics_samples),
+                "--metrics-feature-space",
+                str(args.metrics_feature_space),
+                "--metrics-feature-batch-size",
+                str(args.metrics_feature_batch_size),
+                "--metrics-feature-device",
+                str(args.metrics_feature_device),
+                "--metrics-bootstrap-samples",
+                str(args.metrics_bootstrap_samples),
+                "--metrics-bootstrap-seed",
+                str(args.metrics_bootstrap_seed),
+                "--metrics-bootstrap-alpha",
+                str(args.metrics_bootstrap_alpha),
+            ]
+        )
+        if args.metrics_download_if_missing:
+            cmd.append("--metrics-download-if-missing")
     if args.cuda:
         cmd.append("--cuda")
+    append_verbose_arg(cmd, args)
+    append_perturbation_args(cmd, args)
+    if args.strict_tests:
+        cmd.append("--strict")
+    return cmd
+
+
+def step_test_wgangp_chestxray14(args: argparse.Namespace):
+    generator_path = args.wgangp_test_generator or str(
+        Path(args.outputs_root) / "wgangp_chestxray14" / "netG_latest.pth"
+    )
+    critic_path = args.wgangp_test_critic or str(
+        Path(args.outputs_root) / "wgangp_chestxray14" / "netD_latest.pth"
+    )
+    cmd = [
+        PYTHON_EXE,
+        str(SCRIPTS_DIR / "test_wgangp.py"),
+        "--generator-checkpoint",
+        generator_path,
+        "--critic-checkpoint",
+        critic_path,
+        "--out-dir",
+        str(Path(args.outputs_root) / "wgangp_chestxray14_test"),
+        "--num-samples",
+        str(args.test_num_samples),
+        "--batch-size",
+        str(args.test_batch_size),
+        "--image-size",
+        str(args.image_size),
+        "--channels",
+        "3",
+    ]
+    if args.eval_metrics:
+        cmd.extend(
+            [
+                "--eval-metrics",
+                "--metrics-dataset",
+                "chestxray14",
+                "--metrics-data-root",
+                str(Path(args.data_root) / "ChestXray14"),
+                "--metrics-samples",
+                str(args.metrics_samples),
+                "--metrics-feature-space",
+                str(args.metrics_feature_space),
+                "--metrics-feature-batch-size",
+                str(args.metrics_feature_batch_size),
+                "--metrics-feature-device",
+                str(args.metrics_feature_device),
+                "--metrics-bootstrap-samples",
+                str(args.metrics_bootstrap_samples),
+                "--metrics-bootstrap-seed",
+                str(args.metrics_bootstrap_seed),
+                "--metrics-bootstrap-alpha",
+                str(args.metrics_bootstrap_alpha),
+            ]
+        )
+        if args.metrics_download_if_missing:
+            cmd.append("--metrics-download-if-missing")
+    if args.cuda:
+        cmd.append("--cuda")
+    append_verbose_arg(cmd, args)
+    append_perturbation_args(cmd, args)
     if args.strict_tests:
         cmd.append("--strict")
     return cmd
@@ -262,7 +428,7 @@ def step_test_wgangp_cifar10(args: argparse.Namespace):
 
 def step_test_studiogan_cifar10(args: argparse.Namespace):
     checkpoint = args.studiogan_test_checkpoint or str(
-        Path(args.checkpoints_root) / "StudioGAN" / "CIFAR10" / "studiogan_generator.pth"
+        Path(args.checkpoints_root) / "StudioGAN" / "CIFAR10" / "studioGAN_generator.pkl"
     )
     cmd = [
         PYTHON_EXE,
@@ -274,8 +440,36 @@ def step_test_studiogan_cifar10(args: argparse.Namespace):
         "--num-samples",
         str(args.test_num_samples),
     ]
+    if args.eval_metrics:
+        cmd.extend(
+            [
+                "--eval-metrics",
+                "--metrics-dataset",
+                "cifar10",
+                "--metrics-data-root",
+                str(Path(args.data_root) / "CIFAR10"),
+                "--metrics-samples",
+                str(args.metrics_samples),
+                "--metrics-feature-space",
+                str(args.metrics_feature_space),
+                "--metrics-feature-batch-size",
+                str(args.metrics_feature_batch_size),
+                "--metrics-feature-device",
+                str(args.metrics_feature_device),
+                "--metrics-bootstrap-samples",
+                str(args.metrics_bootstrap_samples),
+                "--metrics-bootstrap-seed",
+                str(args.metrics_bootstrap_seed),
+                "--metrics-bootstrap-alpha",
+                str(args.metrics_bootstrap_alpha),
+            ]
+        )
+        if args.metrics_download_if_missing:
+            cmd.append("--metrics-download-if-missing")
     if args.cuda:
         cmd.append("--cuda")
+    append_verbose_arg(cmd, args)
+    append_perturbation_args(cmd, args)
     if args.strict_tests:
         cmd.append("--strict")
     return cmd
@@ -297,6 +491,33 @@ def step_test_ddpm_cifar10(args: argparse.Namespace):
     ]
     if args.cuda:
         cmd.append("--cuda")
+    append_verbose_arg(cmd, args)
+    if args.eval_metrics:
+        cmd.extend(
+            [
+                "--eval-metrics",
+                "--metrics-dataset",
+                "cifar10",
+                "--metrics-data-root",
+                str(Path(args.data_root) / "CIFAR10"),
+                "--metrics-samples",
+                str(args.metrics_samples),
+                "--metrics-feature-space",
+                str(args.metrics_feature_space),
+                "--metrics-feature-batch-size",
+                str(args.metrics_feature_batch_size),
+                "--metrics-feature-device",
+                str(args.metrics_feature_device),
+                "--metrics-bootstrap-samples",
+                str(args.metrics_bootstrap_samples),
+                "--metrics-bootstrap-seed",
+                str(args.metrics_bootstrap_seed),
+                "--metrics-bootstrap-alpha",
+                str(args.metrics_bootstrap_alpha),
+            ]
+        )
+        if args.metrics_download_if_missing:
+            cmd.append("--metrics-download-if-missing")
     append_perturbation_args(cmd, args)
     if args.strict_tests:
         cmd.append("--strict")
@@ -327,12 +548,25 @@ def step_test_stylegan2_celeba(args: argparse.Namespace):
                 str(Path(args.data_root) / "CelebA"),
                 "--metrics-samples",
                 str(args.metrics_samples),
+                "--metrics-feature-space",
+                str(args.metrics_feature_space),
+                "--metrics-feature-batch-size",
+                str(args.metrics_feature_batch_size),
+                "--metrics-feature-device",
+                str(args.metrics_feature_device),
+                "--metrics-bootstrap-samples",
+                str(args.metrics_bootstrap_samples),
+                "--metrics-bootstrap-seed",
+                str(args.metrics_bootstrap_seed),
+                "--metrics-bootstrap-alpha",
+                str(args.metrics_bootstrap_alpha),
             ]
         )
         if args.metrics_download_if_missing:
             cmd.append("--metrics-download-if-missing")
     if args.cuda:
         cmd.append("--cuda")
+    append_verbose_arg(cmd, args)
     append_perturbation_args(cmd, args)
     if args.strict_tests:
         cmd.append("--strict")
@@ -352,6 +586,11 @@ def append_subset_args(cmd: list[str], args: argparse.Namespace):
         cmd.extend(["--subset-drop-classes", args.subset_drop_classes.strip()])
 
 
+def append_verbose_arg(cmd: list[str], args: argparse.Namespace):
+    if args.verbose:
+        cmd.append("--verbose")
+
+
 def _perturbations_enabled(args: argparse.Namespace) -> bool:
     return bool(
         args.use_perturbations
@@ -360,6 +599,8 @@ def _perturbations_enabled(args: argparse.Namespace) -> bool:
         or args.perturb_class_removal
         or args.perturb_class_imbalance
         or args.perturb_sample_size
+        or args.perturb_preprocessing
+        or args.perturb_domain_shift
     )
 
 
@@ -434,6 +675,15 @@ def append_perturbation_args(cmd: list[str], args: argparse.Namespace):
         cmd.append("--perturb-sample-size")
         cmd.extend(["--perturb-sample-size-n", str(args.perturb_sample_size_n)])
         cmd.extend(["--perturb-sample-size-seed", str(args.perturb_sample_size_seed)])
+    if args.perturb_preprocessing:
+        cmd.append("--perturb-preprocessing")
+        cmd.extend(["--perturb-preprocessing-variant", str(args.perturb_preprocessing_variant)])
+        cmd.extend(["--perturb-preprocessing-scale", str(args.perturb_preprocessing_scale)])
+    if args.perturb_domain_shift:
+        cmd.append("--perturb-domain-shift")
+        cmd.extend(["--perturb-domain-shift-dataset", str(args.perturb_domain_shift_dataset)])
+        cmd.extend(["--perturb-domain-shift-data-root", str(args.perturb_domain_shift_data_root)])
+        cmd.extend(["--perturb-domain-shift-image-size", str(args.perturb_domain_shift_image_size)])
 
 STEP_BUILDERS: dict[str, StepBuilder] = {
     "prep_mnist_cifar10": step_prep_mnist_cifar10,
@@ -443,10 +693,13 @@ STEP_BUILDERS: dict[str, StepBuilder] = {
     "stage_ddpm": step_stage_ddpm,
     "stage_stylegan": step_stage_stylegan,
     "train_dcgan_cifar10": step_train_dcgan_cifar10,
+    "train_dcgan_mnist": step_train_dcgan_mnist,
     "train_wgangp_cifar10": step_train_wgangp_cifar10,
+    "train_wgangp_chestxray14": step_train_wgangp_chestxray14,
     "test_dcgan_cifar10": step_test_dcgan_cifar10,
     "test_dcgan_mnist": step_test_dcgan_mnist,
     "test_wgangp_cifar10": step_test_wgangp_cifar10,
+    "test_wgangp_chestxray14": step_test_wgangp_chestxray14,
     "test_studiogan_cifar10": step_test_studiogan_cifar10,
     "test_ddpm_cifar10": step_test_ddpm_cifar10,
     "test_stylegan2_celeba": step_test_stylegan2_celeba,
@@ -465,12 +718,15 @@ PROFILES: dict[str, list[str]] = {
     ],
     "train": [
         "train_dcgan_cifar10",
+        "train_dcgan_mnist",
         "train_wgangp_cifar10",
+        "train_wgangp_chestxray14",
     ],
     "test": [
         "test_dcgan_cifar10",
         "test_dcgan_mnist",
         "test_wgangp_cifar10",
+        "test_wgangp_chestxray14",
         "test_studiogan_cifar10",
         "test_ddpm_cifar10",
         "test_stylegan2_celeba",
@@ -483,10 +739,13 @@ PROFILES: dict[str, list[str]] = {
         "stage_ddpm",
         "stage_stylegan",
         "train_dcgan_cifar10",
+        "train_dcgan_mnist",
         "train_wgangp_cifar10",
+        "train_wgangp_chestxray14",
         "test_dcgan_cifar10",
         "test_dcgan_mnist",
         "test_wgangp_cifar10",
+        "test_wgangp_chestxray14",
         "test_studiogan_cifar10",
         "test_ddpm_cifar10",
         "test_stylegan2_celeba",
@@ -533,6 +792,17 @@ def parse_args():
         help="Enable metric evaluation in compatible test steps (currently DCGAN).",
     )
     parser.add_argument("--metrics-samples", type=int, default=64)
+    parser.add_argument("--metrics-feature-space", type=str, default="inception_v3")
+    parser.add_argument("--metrics-feature-batch-size", type=int, default=64)
+    parser.add_argument(
+        "--metrics-feature-device",
+        type=str,
+        default="cpu",
+        choices=["cpu", "cuda"],
+    )
+    parser.add_argument("--metrics-bootstrap-samples", type=int, default=0)
+    parser.add_argument("--metrics-bootstrap-seed", type=int, default=0)
+    parser.add_argument("--metrics-bootstrap-alpha", type=float, default=0.05)
     parser.add_argument(
         "--metrics-download-if-missing",
         action=argparse.BooleanOptionalAction,
@@ -662,6 +932,34 @@ def parse_args():
     parser.add_argument("--perturb-sample-size-n", type=int, default=1000)
     parser.add_argument("--perturb-sample-size-seed", type=int, default=42)
     parser.add_argument(
+        "--perturb-preprocessing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable preprocessing variation perturbation.",
+    )
+    parser.add_argument(
+        "--perturb-preprocessing-variant",
+        type=str,
+        default="downsample_bilinear",
+        choices=[
+            "downsample_nearest",
+            "downsample_bilinear",
+            "downsample_bicubic",
+            "center_crop_pad",
+            "grayscale_triplicate",
+        ],
+    )
+    parser.add_argument("--perturb-preprocessing-scale", type=float, default=0.75)
+    parser.add_argument(
+        "--perturb-domain-shift",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable domain-shift perturbation (alternate real reference dataset).",
+    )
+    parser.add_argument("--perturb-domain-shift-dataset", type=str, default="")
+    parser.add_argument("--perturb-domain-shift-data-root", type=str, default="")
+    parser.add_argument("--perturb-domain-shift-image-size", type=int, default=0)
+    parser.add_argument(
         "--strict-tests",
         action="store_true",
         help="Fail test steps when placeholder/TODO test scripts are not fully implemented.",
@@ -696,6 +994,12 @@ def parse_args():
         "--continue-on-error",
         action="store_true",
         help="Keep executing remaining steps even if one step fails.",
+    )
+    parser.add_argument(
+        "--verbose",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable verbose logging in pipeline child scripts and metric computation.",
     )
     return parser.parse_args()
 
@@ -734,6 +1038,8 @@ def _extract_flag_value(cmd: list[str], flag: str) -> str:
 
 
 def _dataset_for_test_step(step_name: str) -> str:
+    if step_name.endswith("_chestxray14"):
+        return "chestxray14"
     if step_name.endswith("_mnist"):
         return "mnist"
     if step_name.endswith("_cifar10"):
@@ -843,6 +1149,17 @@ def _perturbation_config_json_from_cmd(cmd: list[str]) -> str:
             "enabled": "--perturb-sample-size" in cmd,
             "n": _extract_flag_value(cmd, "--perturb-sample-size-n") or "1000",
             "seed": _extract_flag_value(cmd, "--perturb-sample-size-seed") or "42",
+        },
+        "preprocessing": {
+            "enabled": "--perturb-preprocessing" in cmd,
+            "variant": _extract_flag_value(cmd, "--perturb-preprocessing-variant"),
+            "scale": _extract_flag_value(cmd, "--perturb-preprocessing-scale") or "0.75",
+        },
+        "domain_shift": {
+            "enabled": "--perturb-domain-shift" in cmd,
+            "dataset": _extract_flag_value(cmd, "--perturb-domain-shift-dataset"),
+            "data_root": _extract_flag_value(cmd, "--perturb-domain-shift-data-root"),
+            "image_size": _extract_flag_value(cmd, "--perturb-domain-shift-image-size") or "0",
         },
     }
     return json.dumps(config, separators=(",", ":"))

@@ -14,6 +14,7 @@ DEFAULT_STUDIOGAN_REPO = ('https://github.com/POSTECH-CVLab/PyTorch-StudioGAN.gi
 DEFAULT_CHECKPOINT_URL = 'https://huggingface.co/Mingguksky/PyTorch-StudioGAN/resolve/main/studiogan_official_ckpt/CIFAR10_tailored/CIFAR10-SNGAN-train-2022_03_06_02_24_46/model%3DG-best-weights-step%3D88000.pth'
 
 
+# download file
 def _download_file(url, destination):
     if url is None:
         print("No checkpoint URL")
@@ -25,6 +26,7 @@ def _download_file(url, destination):
     tmp_path.replace(destination)
     print(f"Saved to: {destination}")
 
+# helper for stage studiogan source
 def _stage_studiogan_source(source_url: str, target_dir: Path, force: bool) -> None:
     required_path = target_dir / "src" / "models" / "model.py"
 
@@ -55,6 +57,7 @@ def _stage_studiogan_source(source_url: str, target_dir: Path, force: bool) -> N
         print(f"Staged studioGAN source at: {target_dir}")
 
 
+# entry point when running this script
 def main():
     parser = argparse.ArgumentParser(description="Stage StudioGAN checkpoints for /CIFAR10.")
     parser.add_argument("--output-dir", type=str, default="checkpoints/StudioGAN/CIFAR10")

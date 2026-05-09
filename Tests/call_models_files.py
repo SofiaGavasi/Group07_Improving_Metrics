@@ -37,26 +37,17 @@ def call_wgangp_module():
     print("\n[Models/wgangp.py]")
     wg_gen = WGANGPGenerator()
     wg_critic = WGANGPCritic()
-
-    try:
-        _ = wg_gen(torch.randn(2, 100, 1, 1))
-    except NotImplementedError as exc:
-        print(f"WGANGPGenerator.forward -> TODO ({exc})")
-
-    try:
-        _ = wg_critic(torch.randn(2, 3, 32, 32))
-    except NotImplementedError as exc:
-        print(f"WGANGPCritic.forward -> TODO ({exc})")
-
-    try:
-        _ = gradient_penalty(
-            critic=wg_critic,
-            real=torch.randn(2, 3, 32, 32),
-            fake=torch.randn(2, 3, 32, 32),
-            device=torch.device("cpu"),
-        )
-    except NotImplementedError as exc:
-        print(f"gradient_penalty -> TODO ({exc})")
+    fake = wg_gen(torch.randn(2, 100, 1, 1))
+    scores = wg_critic(torch.randn(2, 3, 32, 32))
+    gp = gradient_penalty(
+        critic=wg_critic,
+        real=torch.randn(2, 3, 32, 32),
+        fake=torch.randn(2, 3, 32, 32),
+        device=torch.device("cpu"),
+    )
+    print(f"WGANGPGenerator output shape: {tuple(fake.shape)}")
+    print(f"WGANGPCritic output shape: {tuple(scores.shape)}")
+    print(f"gradient_penalty value: {float(gp.detach()):.4f}")
 
 
 def call_pretrained_wrappers_module():
@@ -76,7 +67,7 @@ def call_pretrained_wrappers_module():
 
 def main():
     call_dcgan_module()
-    #call_wgangp_module()
+    call_wgangp_module()
     #call_pretrained_wrappers_module()
 
 

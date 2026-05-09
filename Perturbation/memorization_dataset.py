@@ -11,7 +11,7 @@ from dataclasses import dataclass
 @dataclass
 class MemoisationConfig:
     fraction: float = 0.1   # fraction of generated samples to replace with real ones
-    seed: int = 42
+    seed: int = 10
 
 
 class MemoisationDataset(Dataset):

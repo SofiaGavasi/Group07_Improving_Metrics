@@ -17,6 +17,7 @@ DEFAULT_STYLEGAN2_ADA_SOURCE_URL = (
 )
 
 
+# download file
 def _download_file(url, destination):
     destination.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = destination.with_suffix(destination.suffix + ".part")
@@ -25,6 +26,7 @@ def _download_file(url, destination):
     tmp_path.replace(destination)
 
 
+# helper for stage stylegan2 ada source
 def _stage_stylegan2_ada_source(source_url: str, target_dir: Path, force: bool) -> None:
     required_paths = (target_dir / "legacy.py", target_dir / "training", target_dir / "torch_utils")
     if not force and all(path.exists() for path in required_paths):
@@ -56,6 +58,7 @@ def _stage_stylegan2_ada_source(source_url: str, target_dir: Path, force: bool) 
         print(f"Staged StyleGAN2-ADA source at: {target_dir}")
 
 
+# entry point when running this script
 def main():
     parser = argparse.ArgumentParser(description="Stage StyleGAN/StyleGAN2 checkpoints for CelebA.")
     parser.add_argument("--output-dir", type=str, default="checkpoints/StyleGAN/CelebA")

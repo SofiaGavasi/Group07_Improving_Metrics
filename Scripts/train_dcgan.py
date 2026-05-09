@@ -23,6 +23,7 @@ from Datasets.unified_dataset_loader import make_default_loader
 from Models.dcgan import DCGANDiscriminator, DCGANGenerator, dcgan_weights_init
 
 
+# parse args
 def parse_args():
     parser = argparse.ArgumentParser(description="Train DCGAN using UnifiedDatasetLoader.")
     parser.add_argument("--dataset", type=str, required=True, choices=["mnist", "cifar10"])
@@ -59,9 +60,16 @@ def parse_args():
         default=True,
         help="Try download/setup if local dataset files are missing.",
     )
+    parser.add_argument(
+        "--verbose",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable verbose logging for dataset/model/training setup details.",
+    )
     return parser.parse_args()
 
 
+# load train dataset
 def load_train_dataset(args, subset_config: DatasetSubsetConfig):
     loader = make_default_loader(
         dataset_name=args.dataset,
@@ -81,6 +89,7 @@ def load_train_dataset(args, subset_config: DatasetSubsetConfig):
         return loader.get_dataset(train=True, download=True)
 
 
+# entry point when running this script
 def main():
     args = parse_args()
 
@@ -96,6 +105,12 @@ def main():
         print("CUDA requested but not available; using CPU.")
     device = torch.device("cuda:0" if args.cuda and torch.cuda.is_available() else "cpu")
     cudnn.benchmark = args.cuda and torch.cuda.is_available()
+    if args.verbose:
+        print(
+            f"[train_dcgan] device={device} dataset={args.dataset} image_size={args.image_size} "
+            f"batch_size={args.batch_size}",
+            flush=True,
+        )
 
     subset_config = DatasetSubsetConfig(
         # centralized subset config keeps behavior consistent across scripts/pipeline
@@ -109,6 +124,12 @@ def main():
 
     dataset = load_train_dataset(args, subset_config=subset_config)
     print(f"Dataset size after filtering: {len(dataset)}")
+    if args.verbose:
+        print(
+            "[train_dcgan] subset_config="
+            f"{subset_config}",
+            flush=True,
+        )
 
     if len(dataset) == 0:
         raise ValueError("Training dataset is empty after filtering.")
@@ -118,6 +139,8 @@ def main():
     if not torch.is_tensor(sample_x) or sample_x.ndim != 3:
         raise ValueError("Expected dataset to return image tensor in CHW format.")
     channels = int(sample_x.shape[0])
+    if args.verbose:
+        print(f"[train_dcgan] inferred channels={channels} sample_shape={tuple(sample_x.shape)}", flush=True)
 
     dataloader = DataLoader(
         dataset,
@@ -125,6 +148,8 @@ def main():
         shuffle=True,
         num_workers=args.workers,
     )
+    if args.verbose:
+        print(f"[train_dcgan] dataloader_batches={len(dataloader)}", flush=True)
 
     netG = DCGANGenerator(
         ngpu=0,

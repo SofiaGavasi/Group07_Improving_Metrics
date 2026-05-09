@@ -142,7 +142,9 @@ def _apply_class_imbalance_kmeans(
     label_features = _label_cooccurrence_features(label_matrix)
 
     def _default_cache_path() -> Path:
-        base = Path(out_dir) if str(out_dir).strip() else Path("outputs")
+        # Use a stable cache root by default. Per-run output folders may be transient
+        # and are more likely to race/fail on synced filesystems.
+        base = Path("outputs")
         safe_dataset = dataset_name.strip() or "dataset"
         return (
             base
@@ -196,16 +198,27 @@ def _apply_class_imbalance_kmeans(
         # clustering labels using co-occurrence features.
         kmeans = KMeans(n_clusters=int(kmeans_k), random_state=int(seed), n_init=10)
         label_cluster_ids = kmeans.fit_predict(label_features).astype(np.int64, copy=False)
+        cache_payload = {
+            "label_cluster_ids": label_cluster_ids,
+            "kmeans_k": np.int64(kmeans_k),
+            "label_count": np.int64(label_count),
+            "dataset_name": np.asarray(dataset_name),
+            "seed": np.int64(seed),
+            "class_names": np.asarray(class_names),
+        }
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(
-            cache_path,
-            label_cluster_ids=label_cluster_ids,
-            kmeans_k=np.int64(kmeans_k),
-            label_count=np.int64(label_count),
-            dataset_name=np.asarray(dataset_name),
-            seed=np.int64(seed),
-            class_names=np.asarray(class_names),
-        )
+        try:
+            np.savez(cache_path, **cache_payload)
+        except OSError:
+            # Fallback to global cache root if custom/per-run path is not writable.
+            fallback_path = (
+                Path("outputs")
+                / "perturbation_cache"
+                / f"class_imbalance_label_kmeans_{dataset_name.strip() or 'dataset'}_labels{label_count}_k{int(kmeans_k)}_seed{int(seed)}.npz"
+            )
+            fallback_path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez(fallback_path, **cache_payload)
+            cache_path = fallback_path
         if cache_status in {"missing_refit", "forced_refit", "mismatch_refit", "load_failed_refit"}:
             cache_status = f"{cache_status}_saved"
         else:
@@ -431,7 +444,7 @@ def apply_class_imbalance(
         balance = [float(b) for b in balance_raw]
     else:
         balance = float(balance_raw)
-    seed=int(config.get('seed',42))
+    seed=int(config.get('seed',10))
 
     if config["strategy"] == "kmeans":
         if real_samples is None or reference_targets is None:

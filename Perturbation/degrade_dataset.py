@@ -24,10 +24,12 @@ class DegradedDataset(Dataset):
     [-1, 1] with shape (C, H, W).
     """
 
-    _NOISE_SIGMAS = [2, 15, 25, 40, 60]
-    _BLUR_KERNELS = [3, 5, 7, 9, 11]
-    _BLUR_SIGMAS = [0.5, 1.0, 2.0, 3.0, 5.0]
-    _JPEG_QUALITIES = [80, 60, 40, 20, 5]
+    # Base settings are calibrated around 32x32 images and then scaled by resolution.
+    # Severity=5 is intentionally very strong.
+    _NOISE_SIGMAS = [6, 18, 32, 56, 96]  # sigma in [0..255] space
+    _BLUR_KERNELS = [3, 7, 11, 17, 25]
+    _BLUR_SIGMAS = [0.8, 1.8, 3.0, 5.0, 8.0]
+    _JPEG_QUALITIES = [75, 45, 25, 10, 3]
 
     def __init__(self, dataset: Dataset, config: DegradationConfig):
         self.dataset = dataset
@@ -37,19 +39,40 @@ class DegradedDataset(Dataset):
     def __len__(self) -> int:
         return len(self.dataset)
 
+    def _resolution_factor(self, image: torch.Tensor) -> float:
+        # Scale corruption strength with spatial resolution so severity levels
+        # are comparably disruptive across datasets.
+        short_side = max(1, min(int(image.shape[-2]), int(image.shape[-1])))
+        return max(1.0, float(short_side) / 32.0)
+
+    @staticmethod
+    def _to_odd(value: int) -> int:
+        return value if value % 2 == 1 else value + 1
+
     def _apply_gaussian_noise(self, image: torch.Tensor) -> torch.Tensor:
-        sigma_255 = float(self._NOISE_SIGMAS[self._severity_idx])
+        # Use sqrt scaling to avoid over-amplifying high-resolution noise too early.
+        resolution_scale = self._resolution_factor(image) ** 0.5
+        sigma_255 = float(self._NOISE_SIGMAS[self._severity_idx]) * resolution_scale
         std = sigma_255 * 2.0 / 255.0
         noised = image + torch.randn_like(image) * std
         return noised.clamp(-1.0, 1.0)
 
     def _apply_gaussian_blur(self, image: torch.Tensor) -> torch.Tensor:
-        kernel_size = int(self._BLUR_KERNELS[self._severity_idx])
-        sigma = float(self._BLUR_SIGMAS[self._severity_idx])
+        resolution_scale = self._resolution_factor(image)
+        base_kernel = int(self._BLUR_KERNELS[self._severity_idx])
+        kernel_size = self._to_odd(int(round(base_kernel * resolution_scale)))
+        # Keep kernel bounded and valid for current image size.
+        max_kernel = self._to_odd(max(3, min(int(image.shape[-2]), int(image.shape[-1])) - 1))
+        kernel_size = max(3, min(kernel_size, max_kernel))
+        sigma = float(self._BLUR_SIGMAS[self._severity_idx]) * (resolution_scale ** 0.5)
         return TF.gaussian_blur(image, kernel_size=[kernel_size, kernel_size], sigma=[sigma, sigma])
 
     def _apply_jpeg_compression(self, image: torch.Tensor) -> torch.Tensor:
-        quality = int(self._JPEG_QUALITIES[self._severity_idx])
+        # Larger images preserve more detail at a given JPEG quality, so push
+        # quality lower as resolution increases.
+        resolution_scale = self._resolution_factor(image)
+        quality_drop = int(round((resolution_scale - 1.0) * 6.0))
+        quality = max(1, int(self._JPEG_QUALITIES[self._severity_idx]) - quality_drop)
         device = image.device
         dtype = image.dtype
         channels = int(image.shape[0])
