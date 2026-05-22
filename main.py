@@ -173,8 +173,8 @@ BATCH_NAME = "final_dcgan_batch"  # Logical campaign name used in output/report 
 EXPERIMENT_SUITE = "dcgan_mnist_pretrained"
 
 # explicit DCGAN checkpoints 
-DCGAN_CIFAR10_PRETRAINED_NETG = "netG_best.pth"
-DCGAN_MNIST_PRETRAINED_NETG = "netG_epoch_30.pth"
+DCGAN_CIFAR10_PRETRAINED_NETG = "Models/saved_weights/netG_best.pth"
+DCGAN_MNIST_PRETRAINED_NETG = "Models/saved_weights/netG_epoch_30.pth"
 
 
 # batch experiments:
