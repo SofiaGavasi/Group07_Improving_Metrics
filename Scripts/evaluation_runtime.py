@@ -13,6 +13,8 @@ from torchvision.utils import save_image
 
 from Metrics.compute_all import MetricComputationConfig, compute_all_metrics_from_extracted
 from Metrics.inception_features import InceptionFeatureConfig, InceptionFeatureExtractor
+from Perturbation.class_assignment_cache import build_label_assignment_context
+from Perturbation.class_fixed_eval import InsufficientClassEvaluationPoolError
 from Perturbation.pipeline_perturbations import (
     apply_configured_perturbations,
     perturbation_needs_real_reference,
@@ -25,6 +27,8 @@ from Scripts.test_runtime_utils import annotate_memoisation_effective_count, mak
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CACHE_ROOT = REPO_ROOT / "outputs" / "shared_eval_cache"
 CACHE_SCHEMA_VERSION = 1
+CLASS_POOL_GROWTH_FACTOR = 2.0
+CLASS_POOL_MAX_ATTEMPTS = 4
 
 
 
@@ -79,6 +83,58 @@ class FeatureReusePlan:
     replacement_source_key: str | None = None
     replacement_indices: list[int] | None = None
     positions: list[int] | None = None
+
+
+@dataclass
+class EvaluationArtifacts:
+    output_dir: Path
+    metrics_path: Path
+    metrics_report: dict[str, Any] | None
+    perturbation_config_path: Path
+    perturbation_config: dict[str, Any] | None
+    cache_report_path: Path
+    cache_report: dict[str, Any]
+
+    def to_test_output(self, step_name):
+        return {
+            "step_name": step_name,
+            "output_dir": str(self.output_dir),
+            "metrics_path": str(self.metrics_path),
+            "metrics_report": self.metrics_report,
+            "perturbation_config_path": str(self.perturbation_config_path),
+            "perturbation_config": self.perturbation_config,
+            "cache_report_path": str(self.cache_report_path),
+            "cache_report": self.cache_report,
+        }
+
+
+@dataclass
+class EvaluationReuseSession:
+    # i keep the long-lived caches here so a whole sweep can reuse them in memory
+    fake_artifacts: dict[str, TensorArtifact]
+    reference_artifacts: dict[str, ReferenceArtifact]
+    label_assignment_contexts: dict[str, Any]
+    memory_feature_artifacts: dict[str, FeatureArtifact]
+    extractor_holders: dict[str, dict[str, InceptionFeatureExtractor]]
+    preview_written_keys: set[str]
+
+    def close(self):
+        for holder in self.extractor_holders.values():
+            extractor = holder.get("extractor")
+            if extractor is not None:
+                extractor.close()
+        self.extractor_holders.clear()
+
+
+def create_evaluation_reuse_session():
+    return EvaluationReuseSession(
+        fake_artifacts={},
+        reference_artifacts={},
+        label_assignment_contexts={},
+        memory_feature_artifacts={},
+        extractor_holders={},
+        preview_written_keys=set(),
+    )
 
 
 
@@ -311,6 +367,158 @@ def load_or_create_fake_samples(
     )
 
 
+def _session_fake_artifact(
+    *,
+    session,
+    generation_payload,
+    generate_samples,
+    verbose,
+):
+    key = _hash_payload("fake_samples", generation_payload)
+    if session is not None:
+        cached = session.fake_artifacts.get(key)
+        if cached is not None:
+            return cached
+
+    artifact = load_or_create_fake_samples(
+        generation_payload=generation_payload,
+        generate_samples=generate_samples,
+        verbose=verbose,
+    )
+    if session is not None:
+        session.fake_artifacts[key] = artifact
+    return artifact
+
+
+def _session_reference_artifact(
+    *,
+    session,
+    dataset_name,
+    data_root,
+    image_size,
+    sample_count,
+    download_if_missing,
+    seed,
+    verbose,
+) :
+    payload = {
+        "dataset_name": str(dataset_name),
+        "data_root": _normalize_path(data_root),
+        "image_size": int(image_size),
+        "sample_count": int(sample_count),
+        "seed": int(seed),
+    }
+    key = _hash_payload("real_reference", payload)
+    if session is not None:
+        cached = session.reference_artifacts.get(key)
+        if cached is not None:
+            return cached
+
+    artifact = load_or_create_real_reference(
+        dataset_name=dataset_name,
+        data_root=data_root,
+        image_size=image_size,
+        sample_count=sample_count,
+        download_if_missing=download_if_missing,
+        seed=seed,
+        verbose=verbose,
+    )
+    if session is not None:
+        session.reference_artifacts[key] = artifact
+    return artifact
+
+
+def _session_label_assignment_context(
+    *,
+    session,
+    fake_artifact,
+    reference_artifact,
+) :
+    if reference_artifact is None:
+        return None
+
+    context_key = _hash_payload(
+        "label_assignment_context",
+        {
+            "fake_key": str(fake_artifact.cache.key),
+            "reference_key": str(reference_artifact.cache.key),
+        },
+    )
+    if session is not None:
+        cached = session.label_assignment_contexts.get(context_key)
+        if cached is not None:
+            return cached
+
+    context = build_label_assignment_context(
+        fake_samples=fake_artifact.tensor,
+        reference_samples=reference_artifact.samples,
+        reference_targets=reference_artifact.targets,
+        class_names=reference_artifact.class_names,
+    )
+    if session is not None:
+        session.label_assignment_contexts[context_key] = context
+    return context
+
+
+def _metric_holder_key(metric_config) :
+    payload = {
+        "feature_space": str(metric_config.feature_space),
+        "feature_batch_size": int(metric_config.feature_batch_size),
+        "feature_device": str(metric_config.feature_device),
+    }
+    return _hash_payload("metric_extractor_holder", payload)
+
+
+def _class_fixed_eval_enabled(args) -> bool:
+    return bool(
+        getattr(args, "eval_metrics", False)
+        and getattr(args, "perturb_class_fixed_eval", True)
+        and (
+            getattr(args, "perturb_class_removal", False)
+            or getattr(args, "perturb_class_imbalance", False)
+        )
+    )
+
+
+def _class_evaluation_count(args) -> int:
+    requested = int(getattr(args, "perturb_class_eval_count", 0))
+    if requested > 0:
+        return requested
+    fallback = int(getattr(args, "metrics_samples", 0))
+    if fallback > 0:
+        return fallback
+    return max(1, int(getattr(args, "num_samples", 1)))
+
+
+def _initial_class_pool_count(args, evaluation_count: int) -> int:
+    base_count = max(1, int(getattr(args, "num_samples", evaluation_count)))
+    explicit = int(getattr(args, "perturb_class_pool_size", 0))
+    if explicit > 0:
+        return max(base_count, int(evaluation_count), explicit)
+    multiplier = max(1.0, float(getattr(args, "perturb_class_pool_multiplier", 3.0)))
+    return max(base_count, int(evaluation_count), int(np.ceil(float(evaluation_count) * multiplier)))
+
+
+def _next_class_pool_count(
+    *,
+    current_count: int,
+    evaluation_count: int,
+    error: InsufficientClassEvaluationPoolError | None,
+) -> int:
+    target = max(int(current_count) + 1, int(evaluation_count))
+    if error is not None:
+        target = max(target, int(error.recommended_pool_size))
+    return max(target, int(np.ceil(float(current_count) * CLASS_POOL_GROWTH_FACTOR)))
+
+
+def _reference_bundle_count(args, generated_pool_count: int) -> int:
+    base_count = max(1, int(getattr(args, "num_samples", generated_pool_count)))
+    metrics_count = max(1, int(getattr(args, "metrics_samples", base_count)))
+    if bool(getattr(args, "perturb_memoisation", False)) or str(getattr(args, "perturb_apply_to", "fake")) in {"real", "both"}:
+        return max(metrics_count, int(generated_pool_count))
+    return max(metrics_count, base_count)
+
+
 
 #__________________________________________________________
 
@@ -321,6 +529,32 @@ def _feature_cache_key(source_key: str, feature_space: str, needs_probs: bool) -
         "needs_probs": bool(needs_probs),
     }
     return _hash_payload("metric_features", payload)
+
+
+def _transient_feature_artifact(
+    *,
+    source_key,
+    feature_space,
+    needs_probs,
+    features,
+    probs,
+    metadata,
+) :
+    key = _feature_cache_key(source_key, feature_space, needs_probs)
+    return FeatureArtifact(
+        features=np.asarray(features, dtype=np.float64),
+        probs=np.asarray(probs, dtype=np.float64) if probs is not None else None,
+        cache=CacheArtifact(
+            kind="metric_features",
+            key=key,
+            path=Path(),
+            cache_hit=False,
+            metadata={
+                **metadata,
+                "transient_in_memory": True,
+            },
+        ),
+    )
 
 
 def _load_feature_artifact(source_key: str, feature_space: str, needs_probs: bool) -> FeatureArtifact | None:
@@ -424,12 +658,22 @@ def _resolve_feature_artifact(
     sample_sources,
     feature_plans,
     verbose,
+    memory_feature_artifacts,
+    persist_derived_feature_artifacts,
     extractor_holder,
 ) :
+    feature_key = _feature_cache_key(source_key, feature_space, needs_probs)
+    memory_cached = memory_feature_artifacts.get(feature_key)
+    if memory_cached is not None:
+        if verbose:
+            print(f"[eval_cache] reusing in-memory metric features {source_key}", flush=True)
+        return memory_cached
+
     cached = _load_feature_artifact(source_key, feature_space, needs_probs)
     if cached is not None:
         if verbose:
             print(f"[eval_cache] reusing metric features {source_key}", flush=True)
+        memory_feature_artifacts[feature_key] = cached
         return cached
 
     plan = feature_plans.get(source_key)
@@ -442,6 +686,8 @@ def _resolve_feature_artifact(
             sample_sources=sample_sources,
             feature_plans=feature_plans,
             verbose=verbose,
+            memory_feature_artifacts=memory_feature_artifacts,
+            persist_derived_feature_artifacts=persist_derived_feature_artifacts,
             extractor_holder=extractor_holder,
         )
         if plan.indices is None:
@@ -458,15 +704,27 @@ def _resolve_feature_artifact(
         }
         if verbose:
             print(f"[eval_cache] deriving subset features for {source_key}", flush=True)
-        return _save_feature_artifact(
-            source_key=source_key,
-            feature_space=feature_space,
-            needs_probs=needs_probs,
-            features=base_artifact.features[subset],
-            probs=derived_probs,
-            metadata=metadata,
-            cache_hit=False,
-        )
+        if persist_derived_feature_artifacts:
+            artifact = _save_feature_artifact(
+                source_key=source_key,
+                feature_space=feature_space,
+                needs_probs=needs_probs,
+                features=base_artifact.features[subset],
+                probs=derived_probs,
+                metadata=metadata,
+                cache_hit=False,
+            )
+        else:
+            artifact = _transient_feature_artifact(
+                source_key=source_key,
+                feature_space=feature_space,
+                needs_probs=needs_probs,
+                features=base_artifact.features[subset],
+                probs=derived_probs,
+                metadata=metadata,
+            )
+        memory_feature_artifacts[feature_key] = artifact
+        return artifact
 
     if plan is not None and plan.mode == "replace":
         base_artifact = _resolve_feature_artifact(
@@ -477,6 +735,8 @@ def _resolve_feature_artifact(
             sample_sources=sample_sources,
             feature_plans=feature_plans,
             verbose=verbose,
+            memory_feature_artifacts=memory_feature_artifacts,
+            persist_derived_feature_artifacts=persist_derived_feature_artifacts,
             extractor_holder=extractor_holder,
         )
         replacement_artifact = _resolve_feature_artifact(
@@ -487,6 +747,8 @@ def _resolve_feature_artifact(
             sample_sources=sample_sources,
             feature_plans=feature_plans,
             verbose=verbose,
+            memory_feature_artifacts=memory_feature_artifacts,
+            persist_derived_feature_artifacts=persist_derived_feature_artifacts,
             extractor_holder=extractor_holder,
         )
         if plan.positions is None or plan.replacement_indices is None:
@@ -510,15 +772,27 @@ def _resolve_feature_artifact(
         }
         if verbose:
             print(f"[eval_cache] deriving replaced features for {source_key}", flush=True)
-        return _save_feature_artifact(
-            source_key=source_key,
-            feature_space=feature_space,
-            needs_probs=needs_probs,
-            features=derived_features,
-            probs=derived_probs if needs_probs else None,
-            metadata=metadata,
-            cache_hit=False,
-        )
+        if persist_derived_feature_artifacts:
+            artifact = _save_feature_artifact(
+                source_key=source_key,
+                feature_space=feature_space,
+                needs_probs=needs_probs,
+                features=derived_features,
+                probs=derived_probs if needs_probs else None,
+                metadata=metadata,
+                cache_hit=False,
+            )
+        else:
+            artifact = _transient_feature_artifact(
+                source_key=source_key,
+                feature_space=feature_space,
+                needs_probs=needs_probs,
+                features=derived_features,
+                probs=derived_probs if needs_probs else None,
+                metadata=metadata,
+            )
+        memory_feature_artifacts[feature_key] = artifact
+        return artifact
 
     samples = sample_sources.get(source_key)
     if samples is None:
@@ -535,7 +809,7 @@ def _resolve_feature_artifact(
         )
         extractor_holder["extractor"] = extractor
 
-    return _extract_feature_artifact(
+    artifact = _extract_feature_artifact(
         source_key=source_key,
         samples=samples,
         feature_space=feature_space,
@@ -544,6 +818,8 @@ def _resolve_feature_artifact(
         extractor=extractor,
         verbose=verbose,
     )
+    memory_feature_artifacts[feature_key] = artifact
+    return artifact
 
 
 
@@ -593,6 +869,15 @@ def _fake_side_signature(perturbation_info):
             "seed": int(class_imbalance.get("seed", 0)),
             "label_threshold": float(class_imbalance.get("label_threshold", 0.0)),
             "min_kept": int(class_imbalance.get("min_kept", 0)),
+        }
+    class_fixed_eval = perturbation_info.get("class_fixed_eval", {})
+    if bool(class_fixed_eval.get("enabled", False)) and (
+        bool(class_removal.get("enabled", False)) or bool(class_imbalance.get("enabled", False))
+    ):
+        signature["class_fixed_eval"] = {
+            "evaluation_count": int(class_fixed_eval.get("evaluation_count", 0)),
+            "pool_size": int(class_fixed_eval.get("pool_size", 0)),
+            "pool_multiplier": float(class_fixed_eval.get("pool_multiplier", 0.0)),
         }
     sample_size = perturbation_info.get("sample_size", {})
     if bool(sample_size.get("enabled", False)):
@@ -676,7 +961,9 @@ def _build_fake_feature_plan(
 
     if applied == ["class_removal:fake"]:
         result = perturbation_info.get("class_removal", {}).get("result", {})
-        indices = result.get("kept_indices")
+        indices = result.get("evaluation_indices")
+        if not isinstance(indices, list):
+            indices = result.get("kept_indices")
         if isinstance(indices, list):
             return FeatureReusePlan(
                 mode="subset",
@@ -686,7 +973,9 @@ def _build_fake_feature_plan(
 
     if applied == ["class_imbalance:fake"]:
         result = perturbation_info.get("class_imbalance", {}).get("result", {})
-        indices = result.get("kept_indices")
+        indices = result.get("evaluation_indices")
+        if not isinstance(indices, list):
+            indices = result.get("kept_indices")
         if isinstance(indices, list):
             return FeatureReusePlan(
                 mode="subset",
@@ -755,6 +1044,16 @@ def _metric_real_samples(
     return base_real_samples[: int(metrics_samples)].detach().cpu()
 
 
+def _should_bootstrap_metrics(perturbation_info):
+    # i only keep bootstrap for the clean baseline and the sample-size sweeps
+    if not isinstance(perturbation_info, dict):
+        return True
+    if not bool(perturbation_info.get("enabled", False)):
+        return True
+    sample_size = perturbation_info.get("sample_size", {})
+    return bool(sample_size.get("enabled", False))
+
+
 def evaluate_metrics_with_cache(
     *,
     real_samples,
@@ -765,7 +1064,10 @@ def evaluate_metrics_with_cache(
     feature_plans,
     out_dir,
     metric_config,
-    verbose: bool = False,
+    memory_feature_artifacts,
+    persist_derived_feature_artifacts = True,
+    extractor_holder = None,
+    verbose = False,
 ) :
     paired_count = min(int(real_samples.shape[0]), int(fake_samples.shape[0]))
     if paired_count < 4:
@@ -779,7 +1081,7 @@ def evaluate_metrics_with_cache(
         fake_source_key: trimmed_fake,
     }
 
-    extractor_holder: dict[str, InceptionFeatureExtractor] = {}
+    holder = extractor_holder if extractor_holder is not None else {}
     try:
         real_features = _resolve_feature_artifact(
             source_key=real_source_key,
@@ -789,7 +1091,9 @@ def evaluate_metrics_with_cache(
             sample_sources=sample_sources,
             feature_plans=feature_plans,
             verbose=verbose,
-            extractor_holder=extractor_holder,
+            memory_feature_artifacts=memory_feature_artifacts,
+            persist_derived_feature_artifacts=persist_derived_feature_artifacts,
+            extractor_holder=holder,
         )
         fake_features = _resolve_feature_artifact(
             source_key=fake_source_key,
@@ -799,12 +1103,15 @@ def evaluate_metrics_with_cache(
             sample_sources=sample_sources,
             feature_plans=feature_plans,
             verbose=verbose,
-            extractor_holder=extractor_holder,
+            memory_feature_artifacts=memory_feature_artifacts,
+            persist_derived_feature_artifacts=persist_derived_feature_artifacts,
+            extractor_holder=holder,
         )
     finally:
-        extractor = extractor_holder.get("extractor")
-        if extractor is not None:
-            extractor.close()
+        if extractor_holder is None:
+            extractor = holder.get("extractor")
+            if extractor is not None:
+                extractor.close()
 
     results = compute_all_metrics_from_extracted(
         real_features=real_features.features,
@@ -836,73 +1143,152 @@ def run_cached_evaluation(
     generation_payload,
     generate_samples,
     resolve_reference_request,
-) :
+    session = None,
+    write_preview = True,
+    persist_derived_feature_artifacts = True,
+    bootstrap_samples_override = None,
+    bootstrap_policy= "full",
+):
     verbose = bool(getattr(args, "verbose", False))
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     args.out_dir = str(out_dir)
+    metrics_path = out_dir / "metrics_report.json"
+    perturbation_path = out_dir / "perturbation_config.json"
+    cache_report_path = out_dir / "cache_report.json"
 
-    fake_artifact = load_or_create_fake_samples(
-        generation_payload=generation_payload,
-        generate_samples=generate_samples,
-        verbose=verbose,
-    )
-    baseline_fake_samples = fake_artifact.tensor.detach().cpu()
-    samples = baseline_fake_samples.clone()
+    class_fixed_eval_enabled = _class_fixed_eval_enabled(args)
+    class_evaluation_count = _class_evaluation_count(args) if class_fixed_eval_enabled else None
+    if class_fixed_eval_enabled:
+        current_generation_count = _initial_class_pool_count(
+            args,
+            int(class_evaluation_count or getattr(args, "num_samples", 1)),
+        )
+    else:
+        current_generation_count = max(1, int(getattr(args, "num_samples", 1)))
+    class_pool_attempt = 0
 
-    metric_image_size = int(getattr(args, "metrics_image_size", 0))
-    if metric_image_size <= 0 and samples.ndim == 4 and int(samples.shape[-1]) == int(samples.shape[-2]):
-        metric_image_size = int(samples.shape[-1])
-    if metric_image_size <= 0:
-        metric_image_size = int(getattr(args, "image_size", 0)) or int(samples.shape[-1])
-
-    ref_dataset, ref_root, ref_image_size = resolve_reference_request(args, metric_image_size)
-
-    needs_reference_bundle = bool(getattr(args, "eval_metrics", False)) or perturbation_needs_real_reference(args)
-    reference_count = max(int(samples.shape[0]), int(getattr(args, "metrics_samples", int(samples.shape[0]))))
-
+    fake_artifact: TensorArtifact | None = None
     reference_artifact: ReferenceArtifact | None = None
-    if needs_reference_bundle:
-        reference_artifact = load_or_create_real_reference(
-            dataset_name=str(ref_dataset),
-            data_root=str(ref_root),
-            image_size=int(ref_image_size),
-            sample_count=reference_count,
-            download_if_missing=bool(getattr(args, "metrics_download_if_missing", False)),
-            seed=int(getattr(args, "seed", 0)),
+    baseline_fake_samples: torch.Tensor | None = None
+    samples: torch.Tensor | None = None
+    perturbation_info: dict[str, Any] | None = None
+    perturbed_real_samples: torch.Tensor | None = None
+
+    # class sweeps may need a bigger pool than the default test sample count.
+    while True:
+        effective_generation_payload = dict(generation_payload)
+        effective_generation_payload["num_samples"] = int(current_generation_count)
+
+        fake_artifact = _session_fake_artifact(
+            session=session,
+            generation_payload=effective_generation_payload,
+            generate_samples=lambda: generate_samples(int(current_generation_count)),
             verbose=verbose,
         )
+        baseline_fake_samples = fake_artifact.tensor.detach().cpu()
+        samples = baseline_fake_samples.clone()
 
-    perturbed_real_samples: torch.Tensor | None = None
-    perturbation_info: dict[str, Any] | None = None
-    if perturbations_enabled(args):
-        needs_reference_targets = perturbation_needs_reference_targets(args)
-        if reference_artifact is not None and (
-            perturbation_needs_real_reference(args) or needs_reference_targets
-        ):
-            perturbed_real_samples = reference_artifact.samples.clone()
+        metric_image_size = int(getattr(args, "metrics_image_size", 0))
+        if metric_image_size <= 0 and samples.ndim == 4 and int(samples.shape[-1]) == int(samples.shape[-2]):
+            metric_image_size = int(samples.shape[-1])
+        if metric_image_size <= 0:
+            metric_image_size = int(getattr(args, "image_size", 0)) or int(samples.shape[-1])
 
-        samples, perturbed_real_samples, perturbation_info = apply_configured_perturbations(
-            fake_samples=samples,
-            args=args,
-            real_samples=perturbed_real_samples,
-            reference_targets=reference_artifact.targets if (needs_reference_targets and reference_artifact is not None) else None,
-            reference_class_names=reference_artifact.class_names if reference_artifact is not None else None,
-            dataset_name=str(ref_dataset),
-        )
-        perturbation_path = out_dir / "perturbation_config.json"
-        perturbation_path.write_text(json.dumps(perturbation_info, indent=2), encoding="utf-8")
-        if verbose:
-            print(f"[eval_cache] wrote perturbation config to {perturbation_path}", flush=True)
+        ref_dataset, ref_root, ref_image_size = resolve_reference_request(args, metric_image_size)
 
-    save_image(samples, out_dir / "generated_samples.png", nrow=8, normalize=True)
-    print(f"Saved {samples.shape[0]} samples to {out_dir / 'generated_samples.png'}")
+        needs_reference_bundle = bool(getattr(args, "eval_metrics", False)) or perturbation_needs_real_reference(args)
+        reference_count = _reference_bundle_count(args, generated_pool_count=int(current_generation_count))
+
+        reference_artifact = None
+        if needs_reference_bundle:
+            reference_artifact = _session_reference_artifact(
+                session=session,
+                dataset_name=str(ref_dataset),
+                data_root=str(ref_root),
+                image_size=int(ref_image_size),
+                sample_count=reference_count,
+                download_if_missing=bool(getattr(args, "metrics_download_if_missing", False)),
+                seed=int(getattr(args, "seed", 0)),
+                verbose=verbose,
+            )
+
+        perturbed_real_samples = None
+        perturbation_info = None
+
+        try:
+            if perturbations_enabled(args):
+                needs_reference_targets = perturbation_needs_reference_targets(args)
+                if reference_artifact is not None and (
+                    perturbation_needs_real_reference(args) or needs_reference_targets
+                ):
+                    perturbed_real_samples = reference_artifact.samples.clone()
+
+                perturbation_runtime_context = None
+                if reference_artifact is not None and (
+                    bool(getattr(args, "perturb_class_removal", False))
+                    or bool(getattr(args, "perturb_class_imbalance", False))
+                ):
+                    perturbation_runtime_context = {
+                        "label_assignment_context": _session_label_assignment_context(
+                            session=session,
+                            fake_artifact=fake_artifact,
+                            reference_artifact=reference_artifact,
+                        ),
+                        "class_fixed_eval_enabled": bool(class_fixed_eval_enabled),
+                        "class_evaluation_count": int(class_evaluation_count or 0),
+                    }
+
+                samples, perturbed_real_samples, perturbation_info = apply_configured_perturbations(
+                    fake_samples=samples,
+                    args=args,
+                    real_samples=perturbed_real_samples,
+                    reference_targets=reference_artifact.targets if (needs_reference_targets and reference_artifact is not None) else None,
+                    reference_class_names=reference_artifact.class_names if reference_artifact is not None else None,
+                    dataset_name=str(ref_dataset),
+                    runtime_context=perturbation_runtime_context,
+                )
+            break
+        except InsufficientClassEvaluationPoolError as exc:
+            if (not class_fixed_eval_enabled) or int(class_pool_attempt) + 1 >= int(CLASS_POOL_MAX_ATTEMPTS):
+                raise
+            next_count = _next_class_pool_count(
+                current_count=int(current_generation_count),
+                evaluation_count=int(class_evaluation_count or getattr(args, "num_samples", 1)),
+                error=exc,
+            )
+            if verbose:
+                print(
+                    f"[eval_cache] class pool too small ({current_generation_count} -> {next_count}) "
+                    f"after {exc.available_count} usable samples for {exc.required_count} targets",
+                    flush=True,
+                )
+            current_generation_count = next_count
+            class_pool_attempt += 1
+            continue
+
+    preview_key = str(fake_artifact.cache.key)
+    preview_should_write = bool(write_preview)
+    if session is not None and preview_key in session.preview_written_keys:
+        preview_should_write = False
+    if preview_should_write:
+        save_image(samples, out_dir / "generated_samples.png", nrow=8, normalize=True)
+        print(f"Saved {samples.shape[0]} samples to {out_dir / 'generated_samples.png'}")
+        if session is not None:
+            session.preview_written_keys.add(preview_key)
 
     cache_report: dict[str, Any] = {
         "fake_samples": fake_artifact.cache.to_report(),
         "real_reference": reference_artifact.cache.to_report() if reference_artifact is not None else None,
+        "class_fixed_eval": {
+            "enabled": bool(class_fixed_eval_enabled),
+            "evaluation_count": int(class_evaluation_count or 0),
+            "pool_count": int(current_generation_count),
+            "attempts": int(class_pool_attempt) + 1,
+        },
         "metrics": None,
     }
+    metrics_report: dict[str, Any] | None = None
 
     if bool(getattr(args, "eval_metrics", False)):
         try:
@@ -922,20 +1308,31 @@ def run_cached_evaluation(
                     verbose=verbose,
                     context=f"test_{model_name}",
                 )
-                perturbation_path = out_dir / "perturbation_config.json"
-                perturbation_path.write_text(json.dumps(perturbation_info, indent=2), encoding="utf-8")
 
             metric_device = str(getattr(args, "metrics_feature_device", "cpu"))
             if metric_device == "cuda" and not torch.cuda.is_available():
                 metric_device = "cpu"
 
+            requested_bootstrap_samples = int(getattr(args, "metrics_bootstrap_samples", 0))
+            if bootstrap_samples_override is None:
+                if _should_bootstrap_metrics(perturbation_info):
+                    effective_bootstrap_samples = requested_bootstrap_samples
+                    effective_bootstrap_policy = "baseline_and_sample_size_only"
+                else:
+                    effective_bootstrap_samples = 0
+                    effective_bootstrap_policy = "baseline_and_sample_size_only"
+            else:
+                effective_bootstrap_samples = int(bootstrap_samples_override)
+                effective_bootstrap_policy = str(bootstrap_policy)
             metric_config = MetricComputationConfig(
                 feature_space=str(getattr(args, "metrics_feature_space", "inception_v3")),
                 feature_batch_size=int(getattr(args, "metrics_feature_batch_size", 64)),
                 feature_device=metric_device,
-                bootstrap_samples=int(getattr(args, "metrics_bootstrap_samples", 0)),
+                bootstrap_samples=effective_bootstrap_samples,
                 bootstrap_seed=int(getattr(args, "metrics_bootstrap_seed", 0)),
                 bootstrap_alpha=float(getattr(args, "metrics_bootstrap_alpha", 0.05)),
+                requested_bootstrap_samples=requested_bootstrap_samples,
+                bootstrap_policy=effective_bootstrap_policy,
                 verbose=verbose,
             )
 
@@ -967,6 +1364,15 @@ def run_cached_evaluation(
             if reference_artifact is not None:
                 sample_sources[baseline_real_key] = reference_artifact.samples
 
+            extractor_holder: dict[str, InceptionFeatureExtractor] | None = None
+            memory_feature_artifacts: dict[str, FeatureArtifact]
+            if session is not None:
+                holder_key = _metric_holder_key(metric_config)
+                extractor_holder = session.extractor_holders.setdefault(holder_key, {})
+                memory_feature_artifacts = session.memory_feature_artifacts
+            else:
+                memory_feature_artifacts = {}
+
             metrics, metrics_cache_report = evaluate_metrics_with_cache(
                 real_samples=real_samples,
                 fake_samples=samples,
@@ -976,18 +1382,35 @@ def run_cached_evaluation(
                 feature_plans=feature_plans,
                 out_dir=out_dir,
                 metric_config=metric_config,
+                memory_feature_artifacts=memory_feature_artifacts,
+                persist_derived_feature_artifacts=persist_derived_feature_artifacts,
+                extractor_holder=extractor_holder,
                 verbose=verbose,
             )
             print(f"Metric summary keys: {list(metrics.keys())}")
             cache_report["metrics"] = metrics_cache_report
+            metrics_report = metrics
         except Exception as exc:
-            metrics_path = out_dir / "metrics_report.json"
-            metrics_path.write_text(json.dumps({"error": str(exc)}, indent=2), encoding="utf-8")
+            metrics_report = {"error": str(exc)}
+            metrics_path.write_text(json.dumps(metrics_report, indent=2), encoding="utf-8")
             if bool(getattr(args, "strict", False)):
                 raise
             print(f"Metric evaluation skipped/failed: {exc}")
 
-    cache_report_path = out_dir / "cache_report.json"
+    if perturbation_info is not None:
+        perturbation_path.write_text(json.dumps(perturbation_info, indent=2), encoding="utf-8")
+        if verbose:
+            print(f"[eval_cache] wrote perturbation config to {perturbation_path}", flush=True)
+
     cache_report_path.write_text(json.dumps(cache_report, indent=2), encoding="utf-8")
     if verbose:
         print(f"[eval_cache] wrote cache report to {cache_report_path}", flush=True)
+    return EvaluationArtifacts(
+        output_dir=out_dir,
+        metrics_path=metrics_path,
+        metrics_report=metrics_report,
+        perturbation_config_path=perturbation_path,
+        perturbation_config=perturbation_info,
+        cache_report_path=cache_report_path,
+        cache_report=cache_report,
+    )

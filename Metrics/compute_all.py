@@ -29,8 +29,10 @@ class MetricComputationConfig:
     feature_batch_size: int = 64
     feature_device: str = "cpu"
     bootstrap_samples: int = 0
+    requested_bootstrap_samples: int | None = None
     bootstrap_seed: int = 0
     bootstrap_alpha: float = 0.05
+    bootstrap_policy: str = "full"
     pr_k: int = 3
     dc_k: int = 5
     is_splits: int = 10
@@ -86,8 +88,14 @@ def _compute_metrics_from_extracted(
             "feature_batch_size": int(cfg.feature_batch_size),
             "fid_max_cov_dim": int(FID_MAX_COV_DIM),
             "bootstrap_samples": int(cfg.bootstrap_samples),
+            "requested_bootstrap_samples": int(
+                cfg.requested_bootstrap_samples
+                if cfg.requested_bootstrap_samples is not None
+                else cfg.bootstrap_samples
+            ),
             "bootstrap_seed": int(cfg.bootstrap_seed),
             "bootstrap_alpha": float(cfg.bootstrap_alpha),
+            "bootstrap_policy": str(cfg.bootstrap_policy),
             "pr_k": int(cfg.pr_k),
             "dc_k": int(cfg.dc_k),
             "is_splits": int(cfg.is_splits),
@@ -298,7 +306,6 @@ def compute_all_metrics_from_extracted(
     )
 
 
-# compute all metrics
 def compute_all_metrics(
     real_samples: Any,
     fake_samples: Any,

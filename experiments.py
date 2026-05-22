@@ -25,6 +25,10 @@ def default_experiment_base_overrides():
         "PERTURB_CLASS_REMOVAL_SEED": 10,
         "PERTURB_CLASS_REMOVAL_LABEL_THRESHOLD": 0.0,
         "PERTURB_CLASS_REMOVAL_MIN_KEPT": 4,
+        "PERTURB_CLASS_FIXED_EVAL": True,
+        "PERTURB_CLASS_EVAL_COUNT": 0,
+        "PERTURB_CLASS_POOL_SIZE": 0,
+        "PERTURB_CLASS_POOL_MULTIPLIER": 3.0,
         "PERTURB_CLASS_IMBALANCE": False,
         "PERTURB_CLASS_IMBALANCE_STRATEGY": "label",
         "PERTURB_CLASS_IMBALANCE_TARGETS": "",
@@ -54,6 +58,7 @@ STYLEGAN2_STEP = "test_stylegan2_celeba"
 STYLEGAN2_MODEL = "stylegan2"
 STYLEGAN2_DATASET = "celeba"
 EXHAUSTIVE_TARGET_COMBO_LIMIT = 12 # added this limit for celeba, otherwise it would have 1 trilion combinations....
+TARGET_COMBO_SIZES = (1, 3, 5) 
 SINGLE_LABEL_DATASET_CLASS_COUNT = 10
 STYLEGAN2_CELEBA_LABEL_COUNT = 40
 STYLEGAN2_CELEBA_KMEANS_K = 10
@@ -68,7 +73,7 @@ def _target_name_tag(targets_csv):
     return str(targets_csv).replace(",", "_")
 
 
-def _all_non_empty_target_csvs(*, target_count, sweep_name):
+def _selected_target_csvs(*, target_count, sweep_name, combo_sizes=TARGET_COMBO_SIZES):
     total = int(target_count)
     if total <= 0:
         raise ValueError(f"{sweep_name} needs at least one target class.")
@@ -82,8 +87,15 @@ def _all_non_empty_target_csvs(*, target_count, sweep_name):
             "for bigger spaces, reduce the label set first or use a clustered target space."
         )
 
+    # i only keep the class counts we actually want to evaluate in the sweep.ì
+    selected_sizes = sorted({int(size) for size in combo_sizes if 0 < int(size) <= total})
+    if not selected_sizes:
+        raise ValueError(
+            f"{sweep_name} does not have any valid combination sizes inside {tuple(combo_sizes)} for {total} targets."
+        )
+
     target_csvs: list[str] = []
-    for combo_size in range(1, total + 1):
+    for combo_size in selected_sizes:
         for combo in combinations(range(total), combo_size):
             target_csvs.append(_targets_csv(combo))
     return target_csvs
@@ -98,7 +110,7 @@ def _append_label_class_removal_sweep(
     experiments,
     make_experiment,
     target_csvs,):
-    # this is the full label sweep: every single class and every cross-combination
+    # this keeps all combinations, but only for the class counts we care about
     for targets_csv in target_csvs:
         experiments.append(
             make_experiment(
@@ -121,7 +133,7 @@ def _append_label_class_imbalance_sweep(
     target_csvs,
     balance_levels,
 ):
-    # i use the same full target list here so imbalance and removal cover the same class space
+    # i use the same target list here so imbalance and removal cover the same class space
     for targets_csv in target_csvs:
         target_tag = _target_name_tag(targets_csv)
         for balance in balance_levels:
@@ -161,11 +173,11 @@ def _build_stylegan2_experiments(
     experiment_base_overrides: dict[str, Any],
 ):
     experiments: list[dict[str, Any]] = []
-    label_target_csvs = _all_non_empty_target_csvs(
+    label_target_csvs = _selected_target_csvs(
         target_count=STYLEGAN2_CELEBA_LABEL_COUNT,
         sweep_name="stylegan2 celeba label perturbation sweep",
     )
-    kmeans_target_csvs = _all_non_empty_target_csvs(
+    kmeans_target_csvs = _selected_target_csvs(
         target_count=STYLEGAN2_CELEBA_KMEANS_K,
         sweep_name="stylegan2 celeba kmeans perturbation sweep",
     )
@@ -235,7 +247,7 @@ def _build_stylegan2_experiments(
         target_csvs=label_target_csvs,
     )
 
-    # this stays exhaustive too, but k=10 is still a manageable space
+    # this still tries every combination for the selected class counts.
     for targets_csv in kmeans_target_csvs:
         experiments.append(
             _stylegan2_experiment(
@@ -373,7 +385,7 @@ def _build_non_kmeans_perturbation_sweep(
     experiment_base_overrides: dict[str, Any],
 ):
     experiments: list[dict[str, Any]] = []
-    label_target_csvs = _all_non_empty_target_csvs(
+    label_target_csvs = _selected_target_csvs(
         target_count=label_count,
         sweep_name=f"{model_name} {dataset_name} label perturbation sweep",
     )

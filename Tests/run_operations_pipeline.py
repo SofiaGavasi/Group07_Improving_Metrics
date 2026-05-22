@@ -670,6 +670,15 @@ def append_perturbation_args(cmd: list[str], args: argparse.Namespace):
         )
         cmd.extend(["--perturb-class-imbalance-min-kept", str(args.perturb_class_imbalance_min_kept)])
 
+    if args.perturb_class_removal or args.perturb_class_imbalance:
+        if args.perturb_class_fixed_eval:
+            cmd.append("--perturb-class-fixed-eval")
+        else:
+            cmd.append("--no-perturb-class-fixed-eval")
+        cmd.extend(["--perturb-class-eval-count", str(args.perturb_class_eval_count)])
+        cmd.extend(["--perturb-class-pool-size", str(args.perturb_class_pool_size)])
+        cmd.extend(["--perturb-class-pool-multiplier", str(args.perturb_class_pool_multiplier)])
+
     if args.perturb_sample_size:
         cmd.append("--perturb-sample-size")
         cmd.extend(["--perturb-sample-size-n", str(args.perturb_sample_size_n)])
@@ -883,6 +892,30 @@ def parse_args():
     parser.add_argument("--perturb-class-removal-seed", type=int, default=10)
     parser.add_argument("--perturb-class-removal-label-threshold", type=float, default=0.0)
     parser.add_argument("--perturb-class-removal-min-kept", type=int, default=4)
+    parser.add_argument(
+        "--perturb-class-fixed-eval",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Keep class-removal and class-imbalance metrics on a fixed fake sample count.",
+    )
+    parser.add_argument(
+        "--perturb-class-eval-count",
+        type=int,
+        default=0,
+        help="Fixed fake sample count used after class perturbations. 0 falls back to metrics_samples.",
+    )
+    parser.add_argument(
+        "--perturb-class-pool-size",
+        type=int,
+        default=0,
+        help="Optional explicit fake pool size for class perturbation sweeps.",
+    )
+    parser.add_argument(
+        "--perturb-class-pool-multiplier",
+        type=float,
+        default=3.0,
+        help="Multiplier used to size the fake pool for class perturbation sweeps.",
+    )
     parser.add_argument(
         "--perturb-class-imbalance",
         action=argparse.BooleanOptionalAction,
@@ -1126,6 +1159,12 @@ def _perturbation_config_json_from_cmd(cmd: list[str]) -> str:
             "seed": _extract_flag_value(cmd, "--perturb-class-removal-seed") or "10",
             "label_threshold": _extract_flag_value(cmd, "--perturb-class-removal-label-threshold") or "0.0",
             "min_kept": _extract_flag_value(cmd, "--perturb-class-removal-min-kept") or "4",
+        },
+        "class_fixed_eval": {
+            "enabled": "--perturb-class-fixed-eval" in cmd and "--no-perturb-class-fixed-eval" not in cmd,
+            "evaluation_count": _extract_flag_value(cmd, "--perturb-class-eval-count") or "0",
+            "pool_size": _extract_flag_value(cmd, "--perturb-class-pool-size") or "0",
+            "pool_multiplier": _extract_flag_value(cmd, "--perturb-class-pool-multiplier") or "3.0",
         },
         "class_imbalance": {
             "enabled": "--perturb-class-imbalance" in cmd,

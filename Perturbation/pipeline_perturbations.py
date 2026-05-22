@@ -94,6 +94,30 @@ def add_perturbation_args(parser: argparse.ArgumentParser):
     )
     parser.add_argument("--perturb-class-removal-min-kept", type=int, default=4)
     parser.add_argument(
+        "--perturb-class-fixed-eval",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Keep class-removal and class-imbalance metrics on a fixed fake sample count.",
+    )
+    parser.add_argument(
+        "--perturb-class-eval-count",
+        type=int,
+        default=0,
+        help="Fixed fake sample count used after class perturbations. 0 falls back to metrics_samples.",
+    )
+    parser.add_argument(
+        "--perturb-class-pool-size",
+        type=int,
+        default=0,
+        help="Optional explicit fake pool size for class perturbation sweeps. 0 uses the multiplier.",
+    )
+    parser.add_argument(
+        "--perturb-class-pool-multiplier",
+        type=float,
+        default=3.0,
+        help="Multiplier used to size the fake pool for class perturbation sweeps.",
+    )
+    parser.add_argument(
         "--perturb-class-imbalance",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -254,6 +278,18 @@ def get_perturbation_config_dict(args: argparse.Namespace) :
             "label_threshold": float(getattr(args, "perturb_class_removal_label_threshold", 0.0)),
             "min_kept": int(getattr(args, "perturb_class_removal_min_kept", 4)),
             "out_dir": str(getattr(args, "out_dir", "")),
+        },
+        "class_fixed_eval": {
+            "enabled": bool(
+                getattr(args, "perturb_class_fixed_eval", True)
+                and (
+                    getattr(args, "perturb_class_removal", False)
+                    or getattr(args, "perturb_class_imbalance", False)
+                )
+            ),
+            "evaluation_count": int(getattr(args, "perturb_class_eval_count", 0)),
+            "pool_size": int(getattr(args, "perturb_class_pool_size", 0)),
+            "pool_multiplier": float(getattr(args, "perturb_class_pool_multiplier", 3.0)),
         },
         "class_imbalance": {
             "enabled": bool(getattr(args, "perturb_class_imbalance", False)),
@@ -480,6 +516,7 @@ def apply_configured_perturbations(
     reference_targets: torch.Tensor | None = None,
     reference_class_names: list[str] | None = None,
     dataset_name: str = "",
+    runtime_context= None,
 ) :
     verbose = bool(getattr(args, "verbose", False))
 
@@ -557,12 +594,15 @@ def apply_configured_perturbations(
                 reference_targets=reference_targets,
                 reference_class_names=reference_class_names,
                 dataset_name=dataset_name,
+                runtime_context=runtime_context,
             )
             config["class_removal"]["result"] = class_removal_details
             config["applied"].append("class_removal:fake")
             _v(
                 "applied class_removal to fake -> "
-                f"removed={class_removal_details.get('removed_count')} kept={class_removal_details.get('kept_count')}"
+                f"removed={class_removal_details.get('removed_count')} "
+                f"survivors={class_removal_details.get('survivor_count', class_removal_details.get('kept_count'))} "
+                f"eval={class_removal_details.get('evaluation_count', class_removal_details.get('returned_count'))}"
             )
 
     if config["class_imbalance"]["enabled"]:
@@ -576,12 +616,15 @@ def apply_configured_perturbations(
                 reference_targets=reference_targets,
                 reference_class_names=reference_class_names,
                 dataset_name=dataset_name,
+                runtime_context=runtime_context,
             )
             config["class_imbalance"]["result"] = class_imbalance_details
             config["applied"].append("class_imbalance:fake")
             _v(
                 "applied class_imbalance to fake -> "
-                f"removed={class_imbalance_details.get('removed_count')} kept={class_imbalance_details.get('kept_count')}"
+                f"removed={class_imbalance_details.get('removed_count')} "
+                f"survivors={class_imbalance_details.get('survivor_count', class_imbalance_details.get('kept_count'))} "
+                f"eval={class_imbalance_details.get('evaluation_count', class_imbalance_details.get('returned_count'))}"
             )
 
     if config["sample_size"]["enabled"]:

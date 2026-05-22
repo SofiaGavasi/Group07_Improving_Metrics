@@ -1,10 +1,26 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import random
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
+
+
+@dataclass
+class PreparedTestRun:
+    model_name: str
+    generation_payload: dict[str, Any]
+    generate_samples: Callable[[int | None], torch.Tensor]
+    resolve_reference_request: Callable[[Any, int], tuple[str, str, int]]
+    cleanup: Callable[[], None] | None = None
+
+
+def close_prepared_test_run(prepared):
+    if prepared is None or prepared.cleanup is None:
+        return
+    prepared.cleanup()
 
 
 # helper for set deterministic seed

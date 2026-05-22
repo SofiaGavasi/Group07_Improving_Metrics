@@ -13,9 +13,13 @@ if str(REPO_ROOT) not in sys.path:
 
 from Models.pretrained_wrappers import StudioGANWrapper
 from Perturbation.pipeline_perturbations import add_perturbation_args, get_domain_shift_override
-from Scripts.evaluation_runtime import file_signature, run_cached_evaluation
-from Scripts.test_runtime_utils import set_deterministic_seed
-def parse_args():
+from Scripts.evaluation_runtime import EvaluationArtifacts, EvaluationReuseSession, file_signature, run_cached_evaluation
+from Scripts.test_runtime_utils import (
+    PreparedTestRun,
+    close_prepared_test_run,
+    set_deterministic_seed,
+)
+def parse_args(argv= None):
     parser = argparse.ArgumentParser(description="Generate samples from a pretrained StudioGAN checkpoint.")
     parser.add_argument("--checkpoint", type=str, default="")
     parser.add_argument("--repo-path", type=str, default="")
@@ -70,7 +74,7 @@ def parse_args():
         help="Enable verbose logging for generation, perturbations, and metrics.",
     )
     add_perturbation_args(parser)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _resolve_real_reference_request(args: argparse.Namespace, default_image_size: int):
@@ -127,8 +131,7 @@ def _generate_in_batches(
     return torch.cat(outputs, dim=0)
 
 
-def main():
-    args = parse_args()
+def prepare_run(args) :
     set_deterministic_seed(seed=int(args.seed), verbose=bool(args.verbose), context="test_studiogan")
 
     checkpoint = Path(args.checkpoint)
@@ -137,34 +140,70 @@ def main():
         if args.strict:
             raise FileNotFoundError(message)
         print(message)
-        return
+        return None
 
     repo_path = Path(args.repo_path) if args.repo_path else checkpoint.parent / "studioGAN_src"
+    wrapper = StudioGANWrapper(
+        repo_path=repo_path,
+        ckpt_path=checkpoint,
+        config_name=args.config_name,
+        device=("cuda" if args.cuda and torch.cuda.is_available() else "cpu"),
+        logger=_build_logger(),
+    )
+    return PreparedTestRun(
+        model_name="studiogan",
+        generation_payload=_build_generation_payload(args, checkpoint, repo_path),
+        generate_samples=lambda total_samples=None: _generate_in_batches(
+            wrapper=wrapper,
+            total_samples=max(1, int(args.num_samples) if total_samples is None else int(total_samples)),
+            batch_size=max(1, int(args.batch_size)),
+            seed=args.seed,
+        ),
+        resolve_reference_request=_resolve_real_reference_request,
+        cleanup=None,
+    )
 
+
+def run_with_args(
+    args: argparse.Namespace,
+    *,
+    prepared = None,
+    session= None,
+    write_preview: bool = True,
+    persist_derived_feature_artifacts = True,
+    bootstrap_samples_override= None,
+    bootstrap_policy = "full",
+) :
+    owned_prepared = prepared is None
     try:
-        wrapper = StudioGANWrapper(
-            repo_path=repo_path,
-            ckpt_path=checkpoint,
-            config_name=args.config_name,
-            device=("cuda" if args.cuda and torch.cuda.is_available() else "cpu"),
-            logger=_build_logger(),
-        )
-        run_cached_evaluation(
+        prepared_run = prepared or prepare_run(args)
+        if prepared_run is None:
+            return None
+        return run_cached_evaluation(
             args=args,
-            model_name="studiogan",
-            generation_payload=_build_generation_payload(args, checkpoint, repo_path),
-            generate_samples=lambda: _generate_in_batches(
-                wrapper=wrapper,
-                total_samples=max(1, int(args.num_samples)),
-                batch_size=max(1, int(args.batch_size)),
-                seed=args.seed,
-            ),
-            resolve_reference_request=_resolve_real_reference_request,
+            model_name=prepared_run.model_name,
+            generation_payload=prepared_run.generation_payload,
+            generate_samples=prepared_run.generate_samples,
+            resolve_reference_request=prepared_run.resolve_reference_request,
+            session=session,
+            write_preview=write_preview,
+            persist_derived_feature_artifacts=persist_derived_feature_artifacts,
+            bootstrap_samples_override=bootstrap_samples_override,
+            bootstrap_policy=bootstrap_policy,
         )
     except Exception as exc:
         print(f"StudioGAN test failed: {exc}")
         if args.strict:
             raise SystemExit(1)
+        return None
+    finally:
+        if owned_prepared:
+            close_prepared_test_run(prepared if prepared is not None else locals().get("prepared_run"))
+
+
+def main():
+    args = parse_args()
+    run_with_args(args)
 
 
 if __name__ == "__main__":

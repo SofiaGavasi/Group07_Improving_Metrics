@@ -1,7 +1,9 @@
 ﻿from __future__ import annotations
 
+import argparse
 import copy
 import hashlib
+import importlib
 import json
 import subprocess
 import sys
@@ -11,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from experiments import build_experiments_for_suite, default_experiment_base_overrides
+from Scripts.test_runtime_utils import close_prepared_test_run
 
 
 def _cuda_available() -> bool:
@@ -81,7 +84,7 @@ METRICS_DOWNLOAD_IF_MISSING = False  # Allow dataset auto-download during metric
 METRICS_FEATURE_SPACE = "inception_v3"  # Feature backbone used for FID/KID/PRDC/IS.
 METRICS_FEATURE_BATCH_SIZE = 64  # Batch size for feature extraction.
 METRICS_FEATURE_DEVICE = "cuda" if CUDA else "cpu"  # Device for feature extraction: "cpu" or "cuda".
-METRICS_BOOTSTRAP_SAMPLES = 5  # Number of bootstrap resamples for confidence intervals (0 disables).
+METRICS_BOOTSTRAP_SAMPLES = 100  # Number of bootstrap resamples for confidence intervals when the policy enables them.
 METRICS_BOOTSTRAP_SEED = 10  # RNG seed for bootstrap reproducibility.
 METRICS_BOOTSTRAP_ALPHA = 0.05  # CI significance level (0.05 -> 95% CI).
 
@@ -112,13 +115,17 @@ PERTURB_CLASS_REMOVAL_KMEANS_RECREATE = False  # Recompute KMeans cache even if 
 PERTURB_CLASS_REMOVAL_SEED = 10  # RNG seed for stochastic selection operations.
 PERTURB_CLASS_REMOVAL_LABEL_THRESHOLD = 0.0  # Multi-label positive threshold.
 PERTURB_CLASS_REMOVAL_MIN_KEPT = 4  # Safety floor: minimum samples kept after filtering.
+PERTURB_CLASS_FIXED_EVAL = True  # Keep class-removal and class-imbalance metrics on a fixed fake count.
+PERTURB_CLASS_EVAL_COUNT = 0  # 0 falls back to METRICS_SAMPLES for class-removal and class-imbalance runs.
+PERTURB_CLASS_POOL_SIZE = 0  # 0 lets the runtime choose a larger fake pool from the multiplier.
+PERTURB_CLASS_POOL_MULTIPLIER = 3.0  # Starting fake-pool multiplier for class-removal and class-imbalance runs.
 
 # class-imbalance perturbation:
 PERTURB_CLASS_IMBALANCE = False  # Enables class-imbalance perturbation.
 PERTURB_CLASS_IMBALANCE_STRATEGY = "label"  # Selection strategy: "label" or "kmeans".
 PERTURB_CLASS_IMBALANCE_TARGETS = ""  # Target labels/clusters to downsample (comma-separated).
 # single ratio "0.3" or per-target list "0.2,0.6"
-PERTURB_CLASS_IMBALANCE_BALANCE = "0.5"  # Keep-ratio for target class (or per-target ratios list).
+PERTURB_CLASS_IMBALANCE_BALANCE = "0.5"  # Drop fraction for target classes (or per-target fractions list).
 PERTURB_CLASS_IMBALANCE_KMEANS_K = 8  # Number of clusters when strategy="kmeans".
 PERTURB_CLASS_IMBALANCE_KMEANS_CACHE_PATH = ""  # Optional path to cached KMeans assignments.
 PERTURB_CLASS_IMBALANCE_KMEANS_RECREATE = False  # Recompute KMeans cache even if cache exists.
@@ -163,7 +170,7 @@ SUBSET_DROP_CLASSES = ""  # Optional class filter drop list (comma-separated).
 
 #______________________________________________________________________________
 # batch naming to keep large experiment campaigns easy to identify.
-BATCH_NAME = "final_dcgan_batch"  # Logical campaign name used in output/report paths.
+BATCH_NAME = "seed_10"  # Logical campaign name used in output/report paths.
 
 # active batch suite:
 # - "dcgan_pretrained_both" (default): runs both user-provided DCGAN checkpoints
@@ -186,6 +193,8 @@ DCGAN_MNIST_PRETRAINED_NETG = "Models/saved_weights/netG_epoch_30.pth"
 SKIP_COMPLETED_EXPERIMENTS = True  # Skip experiments already marked completed in report JSON.
 ENFORCE_TEST_ONLY_EXPERIMENTS = True  # Prevent non-test steps in EXPERIMENTS entries.
 REPORT_SUFFIX = "perturbation_tests"  # Report filename suffix for batch summary JSON.
+IN_PROCESS_BATCH_RUNNER = True  # Reuse one in-process test session for large perturbation campaigns
+GROUPED_BOOTSTRAP_THRESHOLD = 128  # Kept for compatibility, but the policy below now decides which experiments bootstrap
 # Baseline overrides are now defined in experiments.py for easier suite maintenance.
 EXPERIMENT_BASE_OVERRIDES: dict[str, Any] = default_experiment_base_overrides()
 
@@ -255,6 +264,10 @@ def _default_settings() -> dict[str, Any]:
         "PERTURB_CLASS_REMOVAL_SEED": PERTURB_CLASS_REMOVAL_SEED,
         "PERTURB_CLASS_REMOVAL_LABEL_THRESHOLD": PERTURB_CLASS_REMOVAL_LABEL_THRESHOLD,
         "PERTURB_CLASS_REMOVAL_MIN_KEPT": PERTURB_CLASS_REMOVAL_MIN_KEPT,
+        "PERTURB_CLASS_FIXED_EVAL": PERTURB_CLASS_FIXED_EVAL,
+        "PERTURB_CLASS_EVAL_COUNT": PERTURB_CLASS_EVAL_COUNT,
+        "PERTURB_CLASS_POOL_SIZE": PERTURB_CLASS_POOL_SIZE,
+        "PERTURB_CLASS_POOL_MULTIPLIER": PERTURB_CLASS_POOL_MULTIPLIER,
         "PERTURB_CLASS_IMBALANCE": PERTURB_CLASS_IMBALANCE,
         "PERTURB_CLASS_IMBALANCE_STRATEGY": PERTURB_CLASS_IMBALANCE_STRATEGY,
         "PERTURB_CLASS_IMBALANCE_TARGETS": PERTURB_CLASS_IMBALANCE_TARGETS,
@@ -371,7 +384,6 @@ def _append_perturbation_args(cmd: list[str], settings: dict[str, Any]) -> None:
             ]
         )
         cmd.extend(["--perturb-class-removal-min-kept", str(settings["PERTURB_CLASS_REMOVAL_MIN_KEPT"])])
-
     if settings["PERTURB_CLASS_IMBALANCE"]:
         cmd.append("--perturb-class-imbalance")
         cmd.extend(
@@ -397,6 +409,15 @@ def _append_perturbation_args(cmd: list[str], settings: dict[str, Any]) -> None:
             ]
         )
         cmd.extend(["--perturb-class-imbalance-min-kept", str(settings["PERTURB_CLASS_IMBALANCE_MIN_KEPT"])])
+
+    if settings["PERTURB_CLASS_REMOVAL"] or settings["PERTURB_CLASS_IMBALANCE"]:
+        if settings["PERTURB_CLASS_FIXED_EVAL"]:
+            cmd.append("--perturb-class-fixed-eval")
+        else:
+            cmd.append("--no-perturb-class-fixed-eval")
+        cmd.extend(["--perturb-class-eval-count", str(settings["PERTURB_CLASS_EVAL_COUNT"])])
+        cmd.extend(["--perturb-class-pool-size", str(settings["PERTURB_CLASS_POOL_SIZE"])])
+        cmd.extend(["--perturb-class-pool-multiplier", str(settings["PERTURB_CLASS_POOL_MULTIPLIER"])])
     if settings["PERTURB_SAMPLE_SIZE"]:
         cmd.append("--perturb-sample-size")
         cmd.extend(["--perturb-sample-size-n", str(settings["PERTURB_SAMPLE_SIZE_N"])])
@@ -735,6 +756,170 @@ def _collect_test_outputs(settings: dict[str, Any]) -> list[dict[str, Any]]:
     return outputs
 
 
+def _settings_to_pipeline_namespace(settings: dict[str, Any]) -> argparse.Namespace:
+    payload = {str(key).lower(): value for key, value in settings.items()}
+    payload["steps"] = _to_str_list(settings.get("CUSTOM_STEPS"))
+    return argparse.Namespace(**payload)
+
+
+def _load_pipeline_runtime_module():
+    return importlib.import_module("Tests.run_operations_pipeline")
+
+
+def _module_name_from_step_command(repo_root: Path, cmd: list[str]) -> str:
+    script_path = Path(cmd[1]).resolve()
+    relative = script_path.relative_to(repo_root)
+    return relative.with_suffix("").as_posix().replace("/", ".")
+
+
+def _in_process_session_key(repo_root: Path, cmd: list[str]) -> str:
+    skip_flags_with_value = {
+        "--out-dir",
+        "--metrics-dataset",
+        "--metrics-data-root",
+        "--metrics-samples",
+        "--metrics-feature-space",
+        "--metrics-feature-batch-size",
+        "--metrics-feature-device",
+        "--metrics-bootstrap-samples",
+        "--metrics-bootstrap-seed",
+        "--metrics-bootstrap-alpha",
+        "--perturb-apply-to",
+        "--perturb-degrade-severity",
+        "--perturb-memo-fraction",
+        "--perturb-memo-seed",
+        "--perturb-class-removal-strategy",
+        "--perturb-class-removal-targets",
+        "--perturb-class-removal-kmeans-k",
+        "--perturb-class-removal-kmeans-cache-path",
+        "--perturb-class-removal-seed",
+        "--perturb-class-removal-label-threshold",
+        "--perturb-class-removal-min-kept",
+        "--perturb-class-eval-count",
+        "--perturb-class-pool-size",
+        "--perturb-class-pool-multiplier",
+        "--perturb-class-imbalance-strategy",
+        "--perturb-class-imbalance-targets",
+        "--perturb-class-imbalance-balance",
+        "--perturb-class-imbalance-kmeans-k",
+        "--perturb-class-imbalance-kmeans-cache-path",
+        "--perturb-class-imbalance-seed",
+        "--perturb-class-imbalance-label-threshold",
+        "--perturb-class-imbalance-min-kept",
+        "--perturb-sample-size-n",
+        "--perturb-sample-size-seed",
+        "--perturb-preprocessing-variant",
+        "--perturb-preprocessing-scale",
+        "--perturb-domain-shift-dataset",
+        "--perturb-domain-shift-data-root",
+        "--perturb-domain-shift-image-size",
+    }
+    skip_flags_without_value = {
+        "--eval-metrics",
+        "--no-eval-metrics",
+        "--metrics-download-if-missing",
+        "--use-perturbations",
+        "--perturb-degrade",
+        "--perturb-degrade-gaussian-noise",
+        "--perturb-degrade-gaussian-blur",
+        "--perturb-degrade-jpeg-compression",
+        "--perturb-memoisation",
+        "--perturb-class-removal",
+        "--perturb-class-removal-kmeans-recreate",
+        "--perturb-class-fixed-eval",
+        "--no-perturb-class-fixed-eval",
+        "--perturb-class-imbalance",
+        "--perturb-class-imbalance-kmeans-recreate",
+        "--perturb-sample-size",
+        "--perturb-preprocessing",
+        "--perturb-domain-shift",
+        "--verbose",
+        "--strict",
+        "--cuda",
+    }
+
+    normalized: list[str] = [_module_name_from_step_command(repo_root, cmd)]
+    idx = 2
+    while idx < len(cmd):
+        token = str(cmd[idx])
+        if token in skip_flags_with_value:
+            idx += 2
+            continue
+        if token in skip_flags_without_value:
+            idx += 1
+            continue
+        normalized.append(token)
+        if token.startswith("--") and idx + 1 < len(cmd) and not str(cmd[idx + 1]).startswith("--"):
+            normalized.append(str(cmd[idx + 1]))
+            idx += 2
+            continue
+        idx += 1
+
+    return hashlib.sha1(_json_dumps_sorted(normalized).encode("utf-8")).hexdigest()
+
+
+def _build_in_process_candidate(repo_root: Path, settings: dict[str, Any]) -> dict[str, Any] | None:
+    steps = _to_str_list(settings["CUSTOM_STEPS"])
+    if len(steps) != 1:
+        return None
+    step_name = steps[0]
+    if not step_name.startswith("test_"):
+        return None
+
+    pipeline_module = _load_pipeline_runtime_module()
+    step_builder = pipeline_module.STEP_BUILDERS.get(step_name)
+    if step_builder is None:
+        return None
+
+    namespace = _settings_to_pipeline_namespace(settings)
+    cmd = step_builder(namespace)
+    module_name = _module_name_from_step_command(repo_root, cmd)
+    module = importlib.import_module(module_name)
+    parsed_args = module.parse_args(cmd[2:])
+    return {
+        "step_name": step_name,
+        "command": cmd,
+        "module_name": module_name,
+        "module": module,
+        "args": parsed_args,
+        "session_key": f"{step_name}:{_in_process_session_key(repo_root, cmd)}",
+    }
+
+
+def _bootstrap_bucket(name: str, overrides: dict[str, Any]) -> tuple[Any, ...] | None:
+    if str(name).strip() == "baseline_no_perturbation":
+        return ("baseline",)
+
+    if bool(overrides.get("PERTURB_SAMPLE_SIZE", False)):
+        return (
+            "sample_size",
+            int(overrides.get("PERTURB_SAMPLE_SIZE_N", 0)),
+            str(overrides.get("PERTURB_APPLY_TO", "fake")),
+        )
+
+    return None
+
+
+def _effective_bootstrap_samples(
+    *,
+    group_size: int,
+    name: str,
+    overrides: dict[str, Any],
+    requested_samples: int,
+    seen_buckets: set[tuple[Any, ...]],
+) -> tuple[int, str]:
+    # i only keep bootstrap on the baseline and sample-size runs.
+    requested = int(requested_samples)
+    if requested <= 0:
+        return 0, "disabled"
+
+    bucket = _bootstrap_bucket(name=name, overrides=overrides)
+    if bucket is None:
+        return 0, "baseline_and_sample_size_only"
+    seen_buckets.add(bucket)
+    return requested, "baseline_and_sample_size_only"
+
+
 def _run_single(repo_root: Path, pipeline_script: Path, settings: dict[str, Any]) -> None:
     cmd = _build_pipeline_command(pipeline_script=pipeline_script, settings=settings)
     print("Calling pipeline with command:", flush=True)
@@ -743,81 +928,157 @@ def _run_single(repo_root: Path, pipeline_script: Path, settings: dict[str, Any]
 
 
 def _run_batch(repo_root: Path, pipeline_script: Path, base_settings: dict[str, Any]) -> None:
+    from Scripts.evaluation_runtime import create_evaluation_reuse_session
+
     reports_cache: dict[Path, dict[str, Any]] = {}
     failed_experiments: list[str] = []
     skipped_count = 0
+    resolved_records: list[dict[str, Any]] = []
+    group_sizes: dict[str, int] = {}
+    group_states: dict[str, dict[str, Any]] = {}
+
+    for idx, experiment in enumerate(EXPERIMENTS, start=1):
+        name, model_name, dataset_name, settings, overrides = _resolve_experiment_settings(
+            base_settings=base_settings,
+            experiment=experiment,
+            index=idx,
+        )
+        cmd = _build_pipeline_command(pipeline_script=pipeline_script, settings=settings)
+        candidate = None
+        if IN_PROCESS_BATCH_RUNNER and bool(settings["RUN"]):
+            candidate = _build_in_process_candidate(repo_root, settings)
+            if candidate is not None:
+                group_sizes[candidate["session_key"]] = group_sizes.get(candidate["session_key"], 0) + 1
+        resolved_records.append(
+            {
+                "idx": idx,
+                "experiment": experiment,
+                "name": name,
+                "model_name": model_name,
+                "dataset_name": dataset_name,
+                "settings": settings,
+                "overrides": overrides,
+                "command": cmd,
+                "candidate": candidate,
+            }
+        )
 
     print(
         f"Running batch '{base_settings.get('BATCH_NAME', BATCH_NAME)}' with {len(EXPERIMENTS)} experiments.",
         flush=True,
     )
 
-    for idx, experiment in enumerate(EXPERIMENTS, start=1):
-        started_at = datetime.now(timezone.utc)
-        name, model_name, dataset_name, settings, overrides = _resolve_experiment_settings(
-            base_settings=base_settings,
-            experiment=experiment,
-            index=idx,
-        )
+    try:
+        for record in resolved_records:
+            idx = int(record["idx"])
+            name = str(record["name"])
+            model_name = str(record["model_name"])
+            dataset_name = str(record["dataset_name"])
+            settings = record["settings"]
+            overrides = record["overrides"]
+            cmd = record["command"]
+            candidate = record["candidate"]
+            started_at = datetime.now(timezone.utc)
 
-        exp_id = _build_experiment_id(
-            experiment_name=name,
-            model_name=model_name,
-            dataset_name=dataset_name,
-            settings=settings,
-            overrides=overrides,
-        )
-        cmd = _build_pipeline_command(pipeline_script=pipeline_script, settings=settings)
+            exp_id = _build_experiment_id(
+                experiment_name=name,
+                model_name=model_name,
+                dataset_name=dataset_name,
+                settings=settings,
+                overrides=overrides,
+            )
 
-        report_path = _report_path(repo_root / str(base_settings["OUTPUTS_ROOT"]), model_name, dataset_name)
-        report = reports_cache.get(report_path)
-        if report is None:
-            report = _load_report(report_path, model_name=model_name, dataset_name=dataset_name)
-            reports_cache[report_path] = report
+            report_path = _report_path(repo_root / str(base_settings["OUTPUTS_ROOT"]), model_name, dataset_name)
+            report = reports_cache.get(report_path)
+            if report is None:
+                report = _load_report(report_path, model_name=model_name, dataset_name=dataset_name)
+                reports_cache[report_path] = report
 
-        existing = _index_by_experiment_id(report).get(exp_id)
-        if settings["RUN"] and SKIP_COMPLETED_EXPERIMENTS and existing and _is_completed_entry(existing):
-            print(f"Skipping completed experiment {idx}/{len(EXPERIMENTS)}: {name} ({exp_id})", flush=True)
-            skipped_count += 1
-            continue
+            existing = _index_by_experiment_id(report).get(exp_id)
+            if settings["RUN"] and SKIP_COMPLETED_EXPERIMENTS and existing and _is_completed_entry(existing):
+                print(f"Skipping completed experiment {idx}/{len(EXPERIMENTS)}: {name} ({exp_id})", flush=True)
+                skipped_count += 1
+                continue
 
-        print(f"\nExperiment {idx}/{len(EXPERIMENTS)}: {name}", flush=True)
-        print(" ".join(cmd), flush=True)
+            print(f"\nExperiment {idx}/{len(EXPERIMENTS)}: {name}", flush=True)
+            print(" ".join(cmd), flush=True)
 
-        exit_code = 0
-        if settings["RUN"]:
-            completed = subprocess.run(cmd, cwd=str(repo_root), check=False)
-            exit_code = int(completed.returncode)
+            exit_code = 0
+            test_outputs: list[dict[str, Any]] = []
+            if settings["RUN"]:
+                if candidate is not None:
+                    session_key = str(candidate["session_key"])
+                    state = group_states.get(session_key)
+                    if state is None:
+                        prepared = candidate["module"].prepare_run(candidate["args"])
+                        state = {
+                            "prepared": prepared,
+                            "session": create_evaluation_reuse_session(),
+                            "group_size": int(group_sizes.get(session_key, 1)),
+                            "seen_bootstrap_buckets": set(),
+                        }
+                        group_states[session_key] = state
 
-        status = "completed" if exit_code == 0 else "failed"
-        entry = {
-            "experiment_id": exp_id,
-            "name": name,
-            "status": status,
-            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-            "started_at_utc": started_at.isoformat(),
-            "finished_at_utc": datetime.now(timezone.utc).isoformat(),
-            "model_name": model_name,
-            "dataset_name": dataset_name,
-            "batch_name": str(base_settings.get("BATCH_NAME", BATCH_NAME)),
-            "profile": str(settings["PROFILE"]),
-            "steps": _to_str_list(settings["CUSTOM_STEPS"]),
-            "output_root": str(settings["OUTPUTS_ROOT"]),
-            "exit_code": exit_code,
-            "command": " ".join(cmd),
-            "overrides": overrides,
-            "test_outputs": _collect_test_outputs(settings) if settings["RUN"] else [],
-            "metrics_expected": bool(settings["EVAL_METRICS"]),
-        }
-        entry["metrics_available"] = _entry_has_metrics(entry) if settings["RUN"] else False
+                    try:
+                        effective_bootstrap, bootstrap_policy = _effective_bootstrap_samples(
+                            group_size=int(state["group_size"]),
+                            name=name,
+                            overrides=overrides,
+                            requested_samples=int(settings["METRICS_BOOTSTRAP_SAMPLES"]),
+                            seen_buckets=state["seen_bootstrap_buckets"],
+                        )
+                        artifacts = candidate["module"].run_with_args(
+                            candidate["args"],
+                            prepared=state["prepared"],
+                            session=state["session"],
+                            write_preview=(name == "baseline_no_perturbation"),
+                            persist_derived_feature_artifacts=False,
+                            bootstrap_samples_override=effective_bootstrap,
+                            bootstrap_policy=bootstrap_policy,
+                        )
+                        if artifacts is not None:
+                            test_outputs = [artifacts.to_test_output(candidate["step_name"])]
+                    except Exception as exc:
+                        exit_code = 1
+                        print(f"In-process experiment failed: {exc}", flush=True)
+                else:
+                    completed = subprocess.run(cmd, cwd=str(repo_root), check=False)
+                    exit_code = int(completed.returncode)
+                    test_outputs = _collect_test_outputs(settings)
 
-        _upsert_report_entry(report, entry)
-        _write_report(report_path, report)
+            status = "completed" if exit_code == 0 else "failed"
+            entry = {
+                "experiment_id": exp_id,
+                "name": name,
+                "status": status,
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "started_at_utc": started_at.isoformat(),
+                "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+                "model_name": model_name,
+                "dataset_name": dataset_name,
+                "batch_name": str(base_settings.get("BATCH_NAME", BATCH_NAME)),
+                "profile": str(settings["PROFILE"]),
+                "steps": _to_str_list(settings["CUSTOM_STEPS"]),
+                "output_root": str(settings["OUTPUTS_ROOT"]),
+                "exit_code": exit_code,
+                "command": " ".join(cmd),
+                "overrides": overrides,
+                "test_outputs": test_outputs if settings["RUN"] else [],
+                "metrics_expected": bool(settings["EVAL_METRICS"]),
+            }
+            entry["metrics_available"] = _entry_has_metrics(entry) if settings["RUN"] else False
 
-        if exit_code != 0:
-            failed_experiments.append(f"{name} ({exp_id})")
-            if not settings["CONTINUE_ON_ERROR"]:
-                break
+            _upsert_report_entry(report, entry)
+            _write_report(report_path, report)
+
+            if exit_code != 0:
+                failed_experiments.append(f"{name} ({exp_id})")
+                if not settings["CONTINUE_ON_ERROR"]:
+                    break
+    finally:
+        for state in group_states.values():
+            close_prepared_test_run(state.get("prepared"))
+            state["session"].close()
 
     print("\nBatch summary:", flush=True)
     print(f"- total configured experiments: {len(EXPERIMENTS)}", flush=True)

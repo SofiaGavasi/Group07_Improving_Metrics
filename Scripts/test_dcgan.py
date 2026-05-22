@@ -13,12 +13,15 @@ if str(REPO_ROOT) not in sys.path:
 
 from Models.dcgan import DCGANGenerator
 from Perturbation.pipeline_perturbations import add_perturbation_args, get_domain_shift_override
-from Scripts.evaluation_runtime import file_signature, run_cached_evaluation
-from Scripts.test_runtime_utils import set_deterministic_seed
+from Scripts.evaluation_runtime import EvaluationArtifacts, EvaluationReuseSession, file_signature, run_cached_evaluation
+from Scripts.test_runtime_utils import (
+    PreparedTestRun,
+    close_prepared_test_run,
+    set_deterministic_seed,
+)
 
 
-
-def parse_args():
+def parse_args(argv= None):
     parser = argparse.ArgumentParser(description="Generate samples from a trained DCGAN generator.")
     parser.add_argument("--netG", type=str, required=True, help="Path to trained generator checkpoint.")
     parser.add_argument("--out-dir", type=str, default="outputs/dcgan_test")
@@ -66,7 +69,7 @@ def parse_args():
     parser.add_argument("--metrics-bootstrap-alpha", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=10)
     add_perturbation_args(parser)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 # this keeps the domain shift logic in the script, but the heavy lifting now lives elsewhere
@@ -98,9 +101,10 @@ def _generate_samples(
     args: argparse.Namespace,
     generator: DCGANGenerator,
     device: torch.device,
+    total_samples: int | None = None,
 ):
     generated: list[torch.Tensor] = []
-    remaining = int(args.num_samples)
+    remaining = int(args.num_samples) if total_samples is None else int(total_samples)
     latent_rng = torch.Generator(device=device)
     latent_rng.manual_seed(int(args.seed))
     with torch.no_grad():
@@ -112,8 +116,7 @@ def _generate_samples(
     return torch.cat(generated, dim=0)
 
 
-def main():
-    args = parse_args()
+def prepare_run(args):
     set_deterministic_seed(seed=int(args.seed), verbose=bool(args.verbose), context="test_dcgan")
 
     netg_path = Path(args.netG)
@@ -122,7 +125,7 @@ def main():
         if args.strict:
             raise FileNotFoundError(message)
         print(message)
-        return
+        return None
 
     device = torch.device("cuda:0" if args.cuda and torch.cuda.is_available() else "cpu")
     generator = DCGANGenerator(
@@ -135,13 +138,55 @@ def main():
     generator.load_state_dict(torch.load(netg_path, map_location=device))
     generator.eval()
 
-    run_cached_evaluation(
-        args=args,
+    return PreparedTestRun(
         model_name="dcgan",
         generation_payload=_build_generation_payload(args, netg_path),
-        generate_samples=lambda: _generate_samples(args=args, generator=generator, device=device),
+        generate_samples=lambda total_samples=None: _generate_samples(
+            args=args,
+            generator=generator,
+            device=device,
+            total_samples=total_samples,
+        ),
         resolve_reference_request=_resolve_real_reference_request,
+        cleanup=None,
     )
+
+
+def run_with_args(
+    args: argparse.Namespace,
+    *,
+    prepared = None,
+    session = None,
+    write_preview = True,
+    persist_derived_feature_artifacts = True,
+    bootstrap_samples_override = None,
+    bootstrap_policy = "full",
+):
+    owned_prepared = prepared is None
+    prepared_run = prepared or prepare_run(args)
+    if prepared_run is None:
+        return None
+    try:
+        return run_cached_evaluation(
+            args=args,
+            model_name=prepared_run.model_name,
+            generation_payload=prepared_run.generation_payload,
+            generate_samples=prepared_run.generate_samples,
+            resolve_reference_request=prepared_run.resolve_reference_request,
+            session=session,
+            write_preview=write_preview,
+            persist_derived_feature_artifacts=persist_derived_feature_artifacts,
+            bootstrap_samples_override=bootstrap_samples_override,
+            bootstrap_policy=bootstrap_policy,
+        )
+    finally:
+        if owned_prepared:
+            close_prepared_test_run(prepared_run)
+
+
+def main():
+    args = parse_args()
+    run_with_args(args)
 
 
 if __name__ == "__main__":

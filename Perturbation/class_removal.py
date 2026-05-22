@@ -6,20 +6,21 @@ from typing import Any
 import numpy as np
 import torch
 
+from .class_assignment_cache import (
+    LabelAssignmentContext,
+    build_label_assignment_context,
+    class_names_for_label_count,
+    default_class_names_from_targets,
+    prepare_reference_targets,
+)
+from .class_fixed_eval import (
+    select_single_label_weighted_subset,
+    select_uniform_subset,
+)
+
 
 def _parse_token_list(raw: str) -> list[str]:
     return [token.strip() for token in str(raw).split(",") if token.strip()]
-
-
-def _feature_matrix(samples: torch.Tensor) -> np.ndarray:
-    return (
-        samples.detach()
-        .cpu()
-        .float()
-        .reshape(samples.shape[0], -1)
-        .numpy()
-        .astype(np.float64, copy=False)
-    )
 
 
 def _resolve_named_targets(
@@ -55,33 +56,11 @@ def _resolve_named_targets(
     return sorted(set(resolved))
 
 
-def _prepare_reference_targets(reference_targets: torch.Tensor) -> np.ndarray:
-    targets_np = reference_targets.detach().cpu().numpy()
-    if targets_np.ndim == 0:
-        targets_np = targets_np.reshape(1)
-    if targets_np.ndim == 2 and targets_np.shape[1] == 1:
-        targets_np = targets_np.reshape(-1)
-    return targets_np
-
-
-def _class_names_for_label_count(
-    class_names: list[str] | None,
-    label_count: int,
-) -> list[str]:
-    names = [str(name) for name in list(class_names or [])]
-    if len(names) > int(label_count):
-        return names[: int(label_count)]
-    if len(names) < int(label_count):
-        start = len(names)
-        names.extend([f"class_{idx}" for idx in range(start, int(label_count))])
-    return names
-
-
 def _reference_targets_to_binary_matrix(
     reference_targets: torch.Tensor,
     class_names: list[str] | None,
 ) -> tuple[np.ndarray, list[str], np.ndarray]:
-    prepared = _prepare_reference_targets(reference_targets)
+    prepared = prepare_reference_targets(reference_targets)
     if prepared.ndim == 1:
         labels = prepared.astype(np.int64, copy=False)
         inferred = int(labels.max()) + 1 if labels.size else 1
@@ -95,7 +74,7 @@ def _reference_targets_to_binary_matrix(
     else:
         raise ValueError("Unsupported reference target shape for class-removal.")
 
-    names = _class_names_for_label_count(class_names=class_names, label_count=label_count)
+    names = class_names_for_label_count(class_names=class_names, label_count=label_count)
     return matrix, names, prepared
 
 
@@ -123,7 +102,9 @@ def _apply_class_removal_kmeans(
     seed: int,
     label_threshold: float,
     min_kept: int,
-) -> tuple[torch.Tensor, dict[str, Any]]:
+    evaluation_count: int | None,
+    assignment_context = None,
+) :
     if kmeans_k < 2:
         raise ValueError("--perturb-class-removal-kmeans-k must be >= 2.")
 
@@ -239,7 +220,10 @@ def _apply_class_removal_kmeans(
             reference_targets=reference_targets,
             class_names=class_names,
             targets_raw=drop_labels_raw,
+            seed=int(seed),
             min_kept=int(min_kept),
+            evaluation_count=evaluation_count,
+            assignment_context=assignment_context,
         )
     else:
         filtered, drop_details = _apply_class_removal_multi_label(
@@ -249,7 +233,10 @@ def _apply_class_removal_kmeans(
             class_names=class_names,
             targets_raw=drop_labels_raw,
             label_threshold=float(label_threshold),
+            seed=int(seed),
             min_kept=int(min_kept),
+            evaluation_count=evaluation_count,
+            assignment_context=assignment_context,
         )
 
     label_cluster_map = {
@@ -280,33 +267,26 @@ def _apply_class_removal_single_label(
     reference_targets: torch.Tensor,
     class_names: list[str],
     targets_raw: str,
+    seed: int,
     min_kept: int,
+    evaluation_count: int | None,
+    assignment_context= None,
 ):
-    ref_features = _feature_matrix(reference_samples)
-    fake_features = _feature_matrix(fake_samples)
-    labels = _prepare_reference_targets(reference_targets).astype(np.int64, copy=False)
-    unique_labels = sorted(set(labels.tolist()))
-    if not unique_labels:
-        raise ValueError("Label-based class-removal could not find any reference classes.")
+    if assignment_context is not None and assignment_context.label_mode == "single_label":
+        predicted_labels = np.asarray(assignment_context.predicted_labels, dtype=np.int64)
+        pred_hist = dict(assignment_context.predicted_label_histogram or {})
+        upper_bound = max(int(predicted_labels.max()) + 1 if predicted_labels.size else 1, len(class_names))
+    else:
+        assignment_context = build_label_assignment_context(
+            fake_samples=fake_samples,
+            reference_samples=reference_samples,
+            reference_targets=reference_targets,
+            class_names=class_names,
+        )
+        predicted_labels = np.asarray(assignment_context.predicted_labels, dtype=np.int64)
+        pred_hist = dict(assignment_context.predicted_label_histogram or {})
+        upper_bound = max(int(predicted_labels.max()) + 1 if predicted_labels.size else 1, len(class_names))
 
-    centroids: list[np.ndarray] = []
-    centroid_ids: list[int] = []
-    for class_id in unique_labels:
-        class_mask = labels == class_id
-        if not np.any(class_mask):
-            continue
-        centroids.append(ref_features[class_mask].mean(axis=0))
-        centroid_ids.append(int(class_id))
-
-    if not centroids:
-        raise ValueError("Label-based class-removal failed to build class centroids.")
-
-    centroid_matrix = np.stack(centroids, axis=0)
-    distances = ((fake_features[:, None, :] - centroid_matrix[None, :, :]) ** 2).sum(axis=2)
-    nearest = distances.argmin(axis=1)
-    predicted_labels = np.asarray([centroid_ids[idx] for idx in nearest], dtype=np.int64)
-
-    upper_bound = max(max(centroid_ids) + 1, len(class_names))
     resolved_drop = _resolve_named_targets(
         raw_targets=_parse_token_list(targets_raw),
         class_names=class_names,
@@ -320,9 +300,33 @@ def _apply_class_removal_single_label(
             f"kept={int(keep_indices.size)} min_kept={int(min_kept)}"
         )
 
-    filtered = fake_samples[torch.as_tensor(keep_indices, dtype=torch.long)]
-    unique_ids, counts = np.unique(predicted_labels, return_counts=True)
-    pred_hist = {str(int(idx)): int(count) for idx, count in zip(unique_ids, counts)}
+    # for fixed-count eval, i keep the full survivor list and then sample from it.
+    evaluation_indices = keep_indices.astype(np.int64, copy=False)
+    evaluation_sampling = {
+        "mode": "all_survivors",
+        "seed": int(seed),
+        "with_replacement": False,
+    }
+    if evaluation_count is not None and int(evaluation_count) > 0:
+        class_weights = {
+            int(class_id): 0.0 if int(class_id) in resolved_drop else 1.0
+            for class_id in sorted(set(predicted_labels.tolist()))
+        }
+        evaluation_indices = select_single_label_weighted_subset(
+            predicted_labels=predicted_labels,
+            class_weights=class_weights,
+            target_count=int(evaluation_count),
+            seed=int(seed),
+            context="class-removal fixed evaluation",
+        )
+        evaluation_sampling = {
+            "mode": "single_label_exact_quota",
+            "seed": int(seed),
+            "with_replacement": False,
+            "target_count": int(evaluation_count),
+        }
+
+    filtered = fake_samples[torch.as_tensor(evaluation_indices, dtype=torch.long)]
     details = {
         "strategy": "label",
         "label_mode": "single_label",
@@ -330,8 +334,14 @@ def _apply_class_removal_single_label(
         "drop_class_names": [class_names[idx] if idx < len(class_names) else str(idx) for idx in resolved_drop],
         "predicted_label_histogram_fake": pred_hist,
         "kept_indices": [int(idx) for idx in keep_indices.tolist()],
-        "removed_count": int(fake_samples.shape[0]) - int(filtered.shape[0]),
-        "kept_count": int(filtered.shape[0]),
+        "evaluation_indices": [int(idx) for idx in evaluation_indices.tolist()],
+        "evaluation_sampling": evaluation_sampling,
+        "removed_count": int(fake_samples.shape[0]) - int(keep_indices.size),
+        "kept_count": int(keep_indices.size),
+        "survivor_count": int(keep_indices.size),
+        "evaluation_count": int(evaluation_indices.size),
+        "returned_count": int(filtered.shape[0]),
+        "pool_count": int(fake_samples.shape[0]),
     }
     return filtered, details
 
@@ -343,11 +353,26 @@ def _apply_class_removal_multi_label(
     class_names: list[str],
     targets_raw: str,
     label_threshold: float,
+    seed: int,
     min_kept: int,
+    evaluation_count: int | None,
+    assignment_context = None,
 ) :
-    ref_features = _feature_matrix(reference_samples)
-    fake_features = _feature_matrix(fake_samples)
-    target_matrix = (_prepare_reference_targets(reference_targets) > 0).astype(np.uint8)
+    if assignment_context is not None and assignment_context.label_mode == "multi_label":
+        margin_scores = np.asarray(assignment_context.margin_scores, dtype=np.float64)
+        target_matrix = (np.asarray(assignment_context.prepared_targets) > 0).astype(np.uint8)
+    else:
+        assignment_context = build_label_assignment_context(
+            fake_samples=fake_samples,
+            reference_samples=reference_samples,
+            reference_targets=reference_targets,
+            class_names=class_names,
+        )
+        if assignment_context.label_mode != "multi_label":
+            raise ValueError("Expected multi-label assignment context for class-removal.")
+        margin_scores = np.asarray(assignment_context.margin_scores, dtype=np.float64)
+        target_matrix = (np.asarray(assignment_context.prepared_targets) > 0).astype(np.uint8)
+
     if target_matrix.ndim != 2:
         raise ValueError("Expected multi-label matrix for class-removal on this dataset.")
 
@@ -358,21 +383,15 @@ def _apply_class_removal_multi_label(
         upper_bound=label_count,
     )
 
-    drop_mask = np.zeros(fake_features.shape[0], dtype=bool)
+    drop_mask = np.zeros(margin_scores.shape[0], dtype=bool)
     per_label_predicted_positives: dict[str, int] = {}
     for label_idx in resolved_drop:
-        positive = target_matrix[:, label_idx] == 1
-        negative = target_matrix[:, label_idx] == 0
-        if positive.sum() == 0 or negative.sum() == 0:
+        margin_column = margin_scores[:, label_idx]
+        if not np.isfinite(margin_column).any():
             per_label_predicted_positives[str(label_idx)] = 0
             continue
-
-        positive_centroid = ref_features[positive].mean(axis=0)
-        negative_centroid = ref_features[negative].mean(axis=0)
-        dist_pos = ((fake_features - positive_centroid[None, :]) ** 2).sum(axis=1)
-        dist_neg = ((fake_features - negative_centroid[None, :]) ** 2).sum(axis=1)
-        # if closer to positive centroid by threshold margin, we call it a positive prediction.
-        predicted_positive = (dist_neg - dist_pos) > float(label_threshold)
+        # i reuse the stored margin scores here, so threshold changes are still cheap.
+        predicted_positive = margin_column > float(label_threshold)
         per_label_predicted_positives[str(label_idx)] = int(predicted_positive.sum())
         drop_mask |= predicted_positive
 
@@ -383,7 +402,29 @@ def _apply_class_removal_multi_label(
             f"kept={int(keep_indices.size)} min_kept={int(min_kept)}"
         )
 
-    filtered = fake_samples[torch.as_tensor(keep_indices, dtype=torch.long)]
+    # multi-label is messier, so i sample from the survivors after the drop mask is built.
+    evaluation_indices = keep_indices.astype(np.int64, copy=False)
+    evaluation_sampling = {
+        "mode": "all_survivors",
+        "seed": int(seed),
+        "with_replacement": False,
+    }
+    if evaluation_count is not None and int(evaluation_count) > 0:
+        evaluation_indices = select_uniform_subset(
+            keep_indices,
+            target_count=int(evaluation_count),
+            seed=int(seed),
+            context="class-removal fixed evaluation",
+            pool_count=int(fake_samples.shape[0]),
+        )
+        evaluation_sampling = {
+            "mode": "uniform_survivor_subset",
+            "seed": int(seed),
+            "with_replacement": False,
+            "target_count": int(evaluation_count),
+        }
+
+    filtered = fake_samples[torch.as_tensor(evaluation_indices, dtype=torch.long)]
     details = {
         "strategy": "label",
         "label_mode": "multi_label",
@@ -392,8 +433,14 @@ def _apply_class_removal_multi_label(
         "label_threshold": float(label_threshold),
         "predicted_positive_counts": per_label_predicted_positives,
         "kept_indices": [int(idx) for idx in keep_indices.tolist()],
-        "removed_count": int(fake_samples.shape[0]) - int(filtered.shape[0]),
-        "kept_count": int(filtered.shape[0]),
+        "evaluation_indices": [int(idx) for idx in evaluation_indices.tolist()],
+        "evaluation_sampling": evaluation_sampling,
+        "removed_count": int(fake_samples.shape[0]) - int(keep_indices.size),
+        "kept_count": int(keep_indices.size),
+        "survivor_count": int(keep_indices.size),
+        "evaluation_count": int(evaluation_indices.size),
+        "returned_count": int(filtered.shape[0]),
+        "pool_count": int(fake_samples.shape[0]),
     }
     return filtered, details
 
@@ -405,7 +452,17 @@ def apply_class_removal(
     reference_targets: torch.Tensor | None,
     reference_class_names: list[str] | None,
     dataset_name: str,
+    runtime_context= None,
 ) :
+    assignment_context = None
+    evaluation_count = None
+    if isinstance(runtime_context, dict):
+        assignment_context = runtime_context.get("label_assignment_context")
+        if runtime_context.get("class_fixed_eval_enabled", False):
+            raw_count = runtime_context.get("class_evaluation_count")
+            if raw_count is not None:
+                evaluation_count = int(raw_count)
+
     if config["strategy"] == "kmeans":
         if real_samples is None or reference_targets is None:
             raise ValueError("kmeans class-removal needs real reference samples and labels.")
@@ -423,6 +480,8 @@ def apply_class_removal(
             seed=int(config["seed"]),
             label_threshold=float(config["label_threshold"]),
             min_kept=int(config["min_kept"]),
+            evaluation_count=evaluation_count,
+            assignment_context=assignment_context,
         )
 
     if real_samples is None or reference_targets is None:
@@ -431,14 +490,12 @@ def apply_class_removal(
     class_names = list(reference_class_names or [])
     if not class_names:
         # fallback if dataset class names are not available.
-        prepared = _prepare_reference_targets(reference_targets)
-        if prepared.ndim == 1:
-            upper = int(prepared.max()) + 1 if prepared.size else 1
-        else:
-            upper = int(prepared.shape[1])
-        class_names = [str(i) for i in range(max(upper, 1))]
+        class_names = default_class_names_from_targets(
+            reference_targets=reference_targets,
+            class_names=reference_class_names,
+        )
 
-    prepared_targets = _prepare_reference_targets(reference_targets)
+    prepared_targets = prepare_reference_targets(reference_targets)
     if prepared_targets.ndim == 1:
         return _apply_class_removal_single_label(
             fake_samples=fake_samples,
@@ -446,7 +503,10 @@ def apply_class_removal(
             reference_targets=reference_targets,
             class_names=class_names,
             targets_raw=str(config["targets_raw"]),
+            seed=int(config["seed"]),
             min_kept=int(config["min_kept"]),
+            evaluation_count=evaluation_count,
+            assignment_context=assignment_context,
         )
     if prepared_targets.ndim == 2:
         return _apply_class_removal_multi_label(
@@ -456,7 +516,10 @@ def apply_class_removal(
             class_names=class_names,
             targets_raw=str(config["targets_raw"]),
             label_threshold=float(config["label_threshold"]),
+            seed=int(config["seed"]),
             min_kept=int(config["min_kept"]),
+            evaluation_count=evaluation_count,
+            assignment_context=assignment_context,
         )
     raise ValueError(
         f"Unsupported reference target shape for class-removal on dataset '{dataset_name}'."

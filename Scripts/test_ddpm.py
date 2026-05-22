@@ -16,14 +16,18 @@ if str(REPO_ROOT) not in sys.path:
 
 from Models.pretrained_wrappers import DDIMWrapper, DDPMWrapper
 from Perturbation.pipeline_perturbations import add_perturbation_args, get_domain_shift_override
-from Scripts.evaluation_runtime import file_signature, run_cached_evaluation
-from Scripts.test_runtime_utils import set_deterministic_seed
+from Scripts.evaluation_runtime import EvaluationArtifacts, EvaluationReuseSession, file_signature, run_cached_evaluation
+from Scripts.test_runtime_utils import (
+    PreparedTestRun,
+    close_prepared_test_run,
+    set_deterministic_seed,
+)
 
 
 # i kept the public flags intact so old commands still work
 
 
-def parse_args():
+def parse_args(argv= None):
     parser = argparse.ArgumentParser(description="Generate samples from a pretrained DDPM/DDIM checkpoint.")
     parser.add_argument("--checkpoint", type=str, default="checkpoints/DDPM/CIFAR10")
     parser.add_argument("--mode", type=str, default="ddpm", choices=["ddpm", "ddim"])
@@ -78,7 +82,7 @@ def parse_args():
         help="Enable verbose logging for generation, perturbations, and metrics.",
     )
     add_perturbation_args(parser)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _resolve_real_reference_request(args: argparse.Namespace, default_image_size: int):
@@ -131,8 +135,7 @@ def _generate_in_batches(
     return torch.cat(samples, dim=0)
 
 
-def main():
-    args = parse_args()
+def prepare_run(args):
     set_deterministic_seed(seed=int(args.seed), verbose=bool(args.verbose), context="test_ddpm")
 
     checkpoint = Path(args.checkpoint)
@@ -141,31 +144,67 @@ def main():
         if args.strict:
             raise FileNotFoundError(message)
         print(message)
-        return
+        return None
 
     device = torch.device("cuda:0" if args.cuda and torch.cuda.is_available() else "cpu")
     wrapper_cls = DDPMWrapper if args.mode == "ddpm" else DDIMWrapper
+    wrapper = wrapper_cls(checkpoint_path=str(checkpoint))
+    return PreparedTestRun(
+        model_name=str(args.mode),
+        generation_payload=_build_generation_payload(args, checkpoint),
+        generate_samples=lambda total_samples=None: _generate_in_batches(
+            wrapper=wrapper,
+            total_samples=int(args.num_samples) if total_samples is None else int(total_samples),
+            batch_size=max(1, int(args.batch_size)),
+            device=device,
+            num_inference_steps=args.num_inference_steps,
+            seed=args.seed,
+        ),
+        resolve_reference_request=_resolve_real_reference_request,
+        cleanup=None,
+    )
 
+
+def run_with_args(
+    args: argparse.Namespace,
+    *,
+    prepared = None,
+    session= None,
+    write_preview = True,
+    persist_derived_feature_artifacts= True,
+    bootstrap_samples_override= None,
+    bootstrap_policy = "full",
+) :
+    owned_prepared = prepared is None
     try:
-        wrapper = wrapper_cls(checkpoint_path=str(checkpoint))
-        run_cached_evaluation(
+        prepared_run = prepared or prepare_run(args)
+        if prepared_run is None:
+            return None
+        return run_cached_evaluation(
             args=args,
-            model_name=str(args.mode),
-            generation_payload=_build_generation_payload(args, checkpoint),
-            generate_samples=lambda: _generate_in_batches(
-                wrapper=wrapper,
-                total_samples=int(args.num_samples),
-                batch_size=max(1, int(args.batch_size)),
-                device=device,
-                num_inference_steps=args.num_inference_steps,
-                seed=args.seed,
-            ),
-            resolve_reference_request=_resolve_real_reference_request,
+            model_name=prepared_run.model_name,
+            generation_payload=prepared_run.generation_payload,
+            generate_samples=prepared_run.generate_samples,
+            resolve_reference_request=prepared_run.resolve_reference_request,
+            session=session,
+            write_preview=write_preview,
+            persist_derived_feature_artifacts=persist_derived_feature_artifacts,
+            bootstrap_samples_override=bootstrap_samples_override,
+            bootstrap_policy=bootstrap_policy,
         )
     except Exception as exc:
         print(f"{args.mode.upper()} test failed: {exc}")
         if args.strict:
             raise SystemExit(1)
+        return None
+    finally:
+        if owned_prepared:
+            close_prepared_test_run(prepared if prepared is not None else locals().get("prepared_run"))
+
+
+def main():
+    args = parse_args()
+    run_with_args(args)
 
 
 if __name__ == "__main__":

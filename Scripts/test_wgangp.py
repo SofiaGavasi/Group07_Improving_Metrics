@@ -12,12 +12,16 @@ if str(REPO_ROOT) not in sys.path:
 
 from Models.wgangp import WGANGPCritic, WGANGPGenerator
 from Perturbation.pipeline_perturbations import add_perturbation_args, get_domain_shift_override
-from Scripts.evaluation_runtime import file_signature, run_cached_evaluation
-from Scripts.test_runtime_utils import set_deterministic_seed
+from Scripts.evaluation_runtime import EvaluationArtifacts, EvaluationReuseSession, file_signature, run_cached_evaluation
+from Scripts.test_runtime_utils import (
+    PreparedTestRun,
+    close_prepared_test_run,
+    set_deterministic_seed,
+)
 
 
 
-def parse_args():
+def parse_args(argv = None):
     parser = argparse.ArgumentParser(description="Generate samples from a trained WGAN-GP generator.")
     parser.add_argument("--generator-checkpoint", type=str, required=True)
     parser.add_argument("--critic-checkpoint", type=str, default="")
@@ -65,7 +69,7 @@ def parse_args():
         help="Enable verbose logging for generation, perturbations, and metrics.",
     )
     add_perturbation_args(parser)
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _resolve_real_reference_request(args: argparse.Namespace, default_image_size: int):
@@ -98,9 +102,10 @@ def _generate_samples(
     args: argparse.Namespace,
     generator: WGANGPGenerator,
     device: torch.device,
+    total_samples: int | None = None,
 ) :
     generated: list[torch.Tensor] = []
-    remaining = int(args.num_samples)
+    remaining = int(args.num_samples) if total_samples is None else int(total_samples)
     latent_rng = torch.Generator(device=device)
     latent_rng.manual_seed(int(args.seed))
     with torch.no_grad():
@@ -112,8 +117,7 @@ def _generate_samples(
     return torch.cat(generated, dim=0)
 
 
-def main():
-    args = parse_args()
+def prepare_run(args):
     set_deterministic_seed(seed=int(args.seed), verbose=bool(args.verbose), context="test_wgangp")
 
     generator_path = Path(args.generator_checkpoint)
@@ -122,7 +126,7 @@ def main():
         if args.strict:
             raise FileNotFoundError(message)
         print(message)
-        return
+        return None
 
     device = torch.device("cuda:0" if args.cuda and torch.cuda.is_available() else "cpu")
 
@@ -141,13 +145,55 @@ def main():
         critic.load_state_dict(torch.load(critic_path, map_location=device))
         critic.eval()
 
-    run_cached_evaluation(
-        args=args,
+    return PreparedTestRun(
         model_name="wgangp",
         generation_payload=_build_generation_payload(args, generator_path, critic_path),
-        generate_samples=lambda: _generate_samples(args=args, generator=generator, device=device),
+        generate_samples=lambda total_samples=None: _generate_samples(
+            args=args,
+            generator=generator,
+            device=device,
+            total_samples=total_samples,
+        ),
         resolve_reference_request=_resolve_real_reference_request,
+        cleanup=None,
     )
+
+
+def run_with_args(
+    args: argparse.Namespace,
+    *,
+    prepared = None,
+    session= None,
+    write_preview= True,
+    persist_derived_feature_artifacts = True,
+    bootstrap_samples_override= None,
+    bootstrap_policy = "full",
+) :
+    owned_prepared = prepared is None
+    prepared_run = prepared or prepare_run(args)
+    if prepared_run is None:
+        return None
+    try:
+        return run_cached_evaluation(
+            args=args,
+            model_name=prepared_run.model_name,
+            generation_payload=prepared_run.generation_payload,
+            generate_samples=prepared_run.generate_samples,
+            resolve_reference_request=prepared_run.resolve_reference_request,
+            session=session,
+            write_preview=write_preview,
+            persist_derived_feature_artifacts=persist_derived_feature_artifacts,
+            bootstrap_samples_override=bootstrap_samples_override,
+            bootstrap_policy=bootstrap_policy,
+        )
+    finally:
+        if owned_prepared:
+            close_prepared_test_run(prepared_run)
+
+
+def main():
+    args = parse_args()
+    run_with_args(args)
 
 
 if __name__ == "__main__":
