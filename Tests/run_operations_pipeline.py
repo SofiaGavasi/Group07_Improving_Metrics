@@ -26,7 +26,6 @@ examples (from repo root):
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import subprocess
 import sys
@@ -962,7 +961,7 @@ def parse_args():
     parser.add_argument(
         "--strict-tests",
         action="store_true",
-        help="Fail test steps when placeholder/TODO test scripts are not fully implemented.",
+        help="Fail test steps instead of skipping recoverable test-time errors.",
     )
     parser.add_argument("--subset-fraction", type=float, default=None)
     parser.add_argument("--subset-max-samples", type=int, default=None)
@@ -1165,75 +1164,6 @@ def _perturbation_config_json_from_cmd(cmd: list[str]) -> str:
     return json.dumps(config, separators=(",", ":"))
 
 
-def _metrics_json_for_out_dir(out_dir: Path, run_started_at: datetime):
-    metrics_path = out_dir / "metrics_report.json"
-    if not metrics_path.exists():
-        return str(metrics_path), ""
-    try:
-        modified_at = datetime.fromtimestamp(metrics_path.stat().st_mtime, tz=timezone.utc)
-        if modified_at < run_started_at:
-            return str(metrics_path), ""
-        return str(metrics_path), metrics_path.read_text(encoding="utf-8")
-    except OSError:
-        return str(metrics_path), ""
-
-
-def _cache_json_for_out_dir(out_dir: Path, run_started_at: datetime):
-    cache_path = out_dir / "cache_report.json"
-    if not cache_path.exists():
-        return str(cache_path), ""
-    try:
-        modified_at = datetime.fromtimestamp(cache_path.stat().st_mtime, tz=timezone.utc)
-        if modified_at < run_started_at:
-            return str(cache_path), ""
-        return str(cache_path), cache_path.read_text(encoding="utf-8")
-    except OSError:
-        return str(cache_path), ""
-
-
-def append_test_run_csv(
-    args: argparse.Namespace,
-    step_name: str,
-    cmd: list[str],
-    exit_code: int,
-    run_started_at: datetime,
-) -> None:
-    csv_path = Path(args.outputs_root) / "test_runs_log.csv"
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-
-    out_dir_value = _extract_flag_value(cmd, "--out-dir")
-    out_dir = Path(out_dir_value) if out_dir_value else Path(args.outputs_root)
-    model_name, trained_how = _model_info_for_test_step(step_name)
-    metrics_path, metrics_json = _metrics_json_for_out_dir(out_dir, run_started_at=run_started_at)
-    cache_path, cache_json = _cache_json_for_out_dir(out_dir, run_started_at=run_started_at)
-
-    row = {
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "step_name": step_name,
-        "model_name": model_name,
-        "trained_how": trained_how,
-        "weights_path": _weights_for_test_step(step_name, cmd),
-        "dataset": _dataset_for_test_step(step_name),
-        "subset_config": _subset_config_json(args),
-        "perturbation_config": _perturbation_config_json_from_cmd(cmd),
-        "metrics_path": metrics_path,
-        "metrics_report_json": metrics_json,
-        "cache_report_path": cache_path,
-        "cache_report_json": cache_json,
-        "exit_code": str(exit_code),
-        "output_dir": str(out_dir),
-        "command": " ".join(cmd),
-    }
-    fieldnames = list(row.keys())
-
-    write_header = not csv_path.exists() or csv_path.stat().st_size == 0
-    with csv_path.open("a", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
-        if write_header:
-            writer.writeheader()
-        writer.writerow(row)
-
-
 def main():
     args = parse_args()
 
@@ -1250,16 +1180,7 @@ def main():
 
     for step_name in steps:
         cmd = STEP_BUILDERS[step_name](args)
-        started_at = datetime.now(timezone.utc)
         code = run_step(step_name, cmd, run=args.run)
-        if args.run and step_name.startswith("test_"):
-            append_test_run_csv(
-                args=args,
-                step_name=step_name,
-                cmd=cmd,
-                exit_code=code,
-                run_started_at=started_at,
-            )
         if code != 0:
             failures.append((step_name, code))
             print(f"Step failed: {step_name} (exit code {code})")

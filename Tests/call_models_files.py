@@ -50,25 +50,11 @@ def call_wgangp_module():
     print(f"gradient_penalty value: {float(gp.detach()):.4f}")
 
 
-def call_pretrained_wrappers_module():
-    print("\n[Models/pretrained_wrappers.py]")
-    wrappers = [
-        StudioGANWrapper("checkpoints/studiogan_dummy.ckpt"),
-        DDPMWrapper("checkpoints/ddpm_dummy.ckpt"),
-        StyleGAN2Wrapper("checkpoints/stylegan2_dummy.ckpt"),
-    ]
-
-    for wrapper in wrappers:
-        try:
-            _ = wrapper.sample(2, device=torch.device("cpu"))
-        except NotImplementedError as exc:
-            print(f"{wrapper.__class__.__name__}.sample -> TODO ({exc})")
-
 
 def main():
     call_dcgan_module()
     call_wgangp_module()
-    #call_pretrained_wrappers_module()
+   
 
 
 if __name__ == "__main__":

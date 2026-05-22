@@ -100,22 +100,3 @@ def compute_fid_from_features(
     return calculate_fid(real_mu, real_sigma, fake_mu, fake_sigma)
 
 
-# compute fid with clean fid
-def compute_fid_with_clean_fid(real_dir: str, fake_dir: str):
-    """
-    This is fid using the library clean-fid, just as a reference for debugging
-    """
-    # TODO: add optional mode/settings args once eval protocol is finalized
-
-    from cleanfid import fid
-    print("USING CPU CLEAN FID")   
-
-
-    return float(
-        fid.compute_fid(
-            real_dir,
-            fake_dir,
-            device="cpu",
-            num_workers=0   
-        )
-    )

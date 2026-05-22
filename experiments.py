@@ -82,7 +82,6 @@ def _stylegan2_experiment(
 
 def _build_stylegan2_experiments(
     *,
-    test_num_samples: int,
     experiment_base_overrides: dict[str, Any],
 ) -> list[dict[str, Any]]:
     experiments: list[dict[str, Any]] = []
@@ -304,7 +303,6 @@ def _build_non_kmeans_perturbation_sweep(
     checkpoint_path: str,
     class_targets: list[str],
     domain_shift_sweep: list[tuple[str, str, int]],
-    test_num_samples: int,
     experiment_base_overrides: dict[str, Any],
 ) -> list[dict[str, Any]]:
     experiments: list[dict[str, Any]] = []
@@ -460,7 +458,6 @@ def _build_non_kmeans_perturbation_sweep(
 def _build_dcgan_cifar10_pretrained_experiments(
     *,
     dcgan_cifar10_pretrained_netg: str,
-    test_num_samples: int,
     experiment_base_overrides: dict[str, Any],
 ) -> list[dict[str, Any]]:
     return _build_non_kmeans_perturbation_sweep(
@@ -470,7 +467,6 @@ def _build_dcgan_cifar10_pretrained_experiments(
         checkpoint_path=dcgan_cifar10_pretrained_netg,
         class_targets=["0", "1", "2", "0,1,2"],
         domain_shift_sweep=[("mnist", "data/MNIST", 32)],
-        test_num_samples=test_num_samples,
         experiment_base_overrides=experiment_base_overrides,
     )
 
@@ -478,7 +474,6 @@ def _build_dcgan_cifar10_pretrained_experiments(
 def _build_dcgan_mnist_pretrained_experiments(
     *,
     dcgan_mnist_pretrained_netg: str,
-    test_num_samples: int,
     experiment_base_overrides: dict[str, Any],
 ) -> list[dict[str, Any]]:
     return _build_non_kmeans_perturbation_sweep(
@@ -488,7 +483,6 @@ def _build_dcgan_mnist_pretrained_experiments(
         checkpoint_path=dcgan_mnist_pretrained_netg,
         class_targets=["0", "1", "2", "0,1,2"],
         domain_shift_sweep=[("cifar10", "data/CIFAR10", 32)],
-        test_num_samples=test_num_samples,
         experiment_base_overrides=experiment_base_overrides,
     )
 
@@ -496,40 +490,35 @@ def _build_dcgan_mnist_pretrained_experiments(
 def build_experiments_for_suite(
     *,
     experiment_suite: str,
-    test_num_samples: int,
     dcgan_cifar10_pretrained_netg: str,
     dcgan_mnist_pretrained_netg: str,
     experiment_base_overrides: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
+) :
+    # this file only builds override grids now, so it does not need the sample count anymore
     base_overrides = experiment_base_overrides or default_experiment_base_overrides()
     suite = str(experiment_suite).strip().lower()
     if suite == "stylegan2_celeba":
         return _build_stylegan2_experiments(
-            test_num_samples=test_num_samples,
             experiment_base_overrides=base_overrides,
         )
     if suite == "dcgan_cifar10_pretrained":
         return _build_dcgan_cifar10_pretrained_experiments(
             dcgan_cifar10_pretrained_netg=dcgan_cifar10_pretrained_netg,
-            test_num_samples=test_num_samples,
             experiment_base_overrides=base_overrides,
         )
     if suite == "dcgan_mnist_pretrained":
         return _build_dcgan_mnist_pretrained_experiments(
             dcgan_mnist_pretrained_netg=dcgan_mnist_pretrained_netg,
-            test_num_samples=test_num_samples,
             experiment_base_overrides=base_overrides,
         )
     if suite == "dcgan_pretrained_both":
         return [
             *_build_dcgan_cifar10_pretrained_experiments(
                 dcgan_cifar10_pretrained_netg=dcgan_cifar10_pretrained_netg,
-                test_num_samples=test_num_samples,
                 experiment_base_overrides=base_overrides,
             ),
             *_build_dcgan_mnist_pretrained_experiments(
                 dcgan_mnist_pretrained_netg=dcgan_mnist_pretrained_netg,
-                test_num_samples=test_num_samples,
                 experiment_base_overrides=base_overrides,
             ),
         ]

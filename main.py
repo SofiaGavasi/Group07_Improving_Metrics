@@ -191,7 +191,6 @@ EXPERIMENT_BASE_OVERRIDES: dict[str, Any] = default_experiment_base_overrides()
 
 EXPERIMENTS: list[dict[str, Any]] = build_experiments_for_suite(
     experiment_suite=EXPERIMENT_SUITE,
-    test_num_samples=TEST_NUM_SAMPLES,
     dcgan_cifar10_pretrained_netg=DCGAN_CIFAR10_PRETRAINED_NETG,
     dcgan_mnist_pretrained_netg=DCGAN_MNIST_PRETRAINED_NETG,
     experiment_base_overrides=EXPERIMENT_BASE_OVERRIDES,
