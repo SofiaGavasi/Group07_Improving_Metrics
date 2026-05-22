@@ -1165,7 +1165,7 @@ def _perturbation_config_json_from_cmd(cmd: list[str]) -> str:
     return json.dumps(config, separators=(",", ":"))
 
 
-def _metrics_json_for_out_dir(out_dir: Path, run_started_at: datetime) -> tuple[str, str]:
+def _metrics_json_for_out_dir(out_dir: Path, run_started_at: datetime):
     metrics_path = out_dir / "metrics_report.json"
     if not metrics_path.exists():
         return str(metrics_path), ""
@@ -1176,6 +1176,19 @@ def _metrics_json_for_out_dir(out_dir: Path, run_started_at: datetime) -> tuple[
         return str(metrics_path), metrics_path.read_text(encoding="utf-8")
     except OSError:
         return str(metrics_path), ""
+
+
+def _cache_json_for_out_dir(out_dir: Path, run_started_at: datetime):
+    cache_path = out_dir / "cache_report.json"
+    if not cache_path.exists():
+        return str(cache_path), ""
+    try:
+        modified_at = datetime.fromtimestamp(cache_path.stat().st_mtime, tz=timezone.utc)
+        if modified_at < run_started_at:
+            return str(cache_path), ""
+        return str(cache_path), cache_path.read_text(encoding="utf-8")
+    except OSError:
+        return str(cache_path), ""
 
 
 def append_test_run_csv(
@@ -1192,6 +1205,7 @@ def append_test_run_csv(
     out_dir = Path(out_dir_value) if out_dir_value else Path(args.outputs_root)
     model_name, trained_how = _model_info_for_test_step(step_name)
     metrics_path, metrics_json = _metrics_json_for_out_dir(out_dir, run_started_at=run_started_at)
+    cache_path, cache_json = _cache_json_for_out_dir(out_dir, run_started_at=run_started_at)
 
     row = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
@@ -1204,6 +1218,8 @@ def append_test_run_csv(
         "perturbation_config": _perturbation_config_json_from_cmd(cmd),
         "metrics_path": metrics_path,
         "metrics_report_json": metrics_json,
+        "cache_report_path": cache_path,
+        "cache_report_json": cache_json,
         "exit_code": str(exit_code),
         "output_dir": str(out_dir),
         "command": " ".join(cmd),

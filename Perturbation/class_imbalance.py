@@ -351,6 +351,7 @@ def _apply_class_imbalance_single_label(
         "drop_classes": resolved_drop,
         "drop_class_names": [class_names[idx] if idx < len(class_names) else str(idx) for idx in resolved_drop],
         "predicted_label_histogram_fake": pred_hist,
+        "kept_indices": [int(idx) for idx in keep_indices.tolist()],
         "removed_count": int(fake_samples.shape[0]) - int(filtered.shape[0]),
         "kept_count": int(filtered.shape[0]),
     }
@@ -424,6 +425,7 @@ def _apply_class_imbalance_multi_label(
         "drop_class_names": [class_names[idx] if idx < len(class_names) else str(idx) for idx in resolved_drop],
         "label_threshold": float(label_threshold),
         "predicted_positive_counts": per_label_predicted_positives,
+        "kept_indices": [int(idx) for idx in keep_indices.tolist()],
         "removed_count": int(fake_samples.shape[0]) - int(filtered.shape[0]),
         "kept_count": int(filtered.shape[0]),
     }

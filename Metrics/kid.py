@@ -49,19 +49,28 @@ def compute_kid(real_features: np.ndarray, fake_features: np.ndarray):
     )
     subset_size = min(1000, m, n, max_subset_by_memory)
 
-    # if subset is tiny there is no value in many bootstrap rounds.
-    num_rounds = 100 if subset_size >= 16 else 20
+    while subset_size >= 2:
+        # if subset is tiny there is no value in many bootstrap rounds.
+        num_rounds = 100 if subset_size >= 16 else 20
+        KIDs = []
+        try:
+            for _ in range(num_rounds):
+                replace_real = m < subset_size
+                replace_fake = n < subset_size
+                random_real = np.random.choice(m, subset_size, replace=replace_real)
+                random_fake = np.random.choice(n, subset_size, replace=replace_fake)
+                sampled_kid = kid(real_features[random_real], fake_features[random_fake])
+                KIDs.append(sampled_kid)
+            return np.mean(KIDs), np.std(KIDs)
+        except MemoryError:
+            subset_size //= 2
+        except Exception as exc:
+            message = str(exc).lower()
+            if "unable to allocate" not in message:
+                raise
+            subset_size //= 2
 
-    KIDs = []
-    for _ in range(num_rounds):
-        replace_real = m < subset_size
-        replace_fake = n < subset_size
-        random_real = np.random.choice(m, subset_size, replace=replace_real)
-        random_fake = np.random.choice(n, subset_size, replace=replace_fake)
-        sampled_kid = kid(real_features[random_real], fake_features[random_fake])
-        KIDs.append(sampled_kid)
-
-    return np.mean(KIDs) , np.std(KIDs)
+    raise MemoryError("KID failed due to memory pressure even after reducing subset size.")
 
 # helper for kid clean
 def kid_clean(real_images: np.ndarray, fake_images: np.ndarray):

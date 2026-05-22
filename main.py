@@ -81,7 +81,7 @@ METRICS_DOWNLOAD_IF_MISSING = False  # Allow dataset auto-download during metric
 METRICS_FEATURE_SPACE = "inception_v3"  # Feature backbone used for FID/KID/PRDC/IS.
 METRICS_FEATURE_BATCH_SIZE = 64  # Batch size for feature extraction.
 METRICS_FEATURE_DEVICE = "cuda" if CUDA else "cpu"  # Device for feature extraction: "cpu" or "cuda".
-METRICS_BOOTSTRAP_SAMPLES = 200  # Number of bootstrap resamples for confidence intervals (0 disables).
+METRICS_BOOTSTRAP_SAMPLES = 5  # Number of bootstrap resamples for confidence intervals (0 disables).
 METRICS_BOOTSTRAP_SEED = 10  # RNG seed for bootstrap reproducibility.
 METRICS_BOOTSTRAP_ALPHA = 0.05  # CI significance level (0.05 -> 95% CI).
 
@@ -719,6 +719,7 @@ def _collect_test_outputs(settings: dict[str, Any]) -> list[dict[str, Any]]:
         out_dir = Path(str(settings["OUTPUTS_ROOT"])) / out_subdir
         metrics_path = out_dir / "metrics_report.json"
         perturb_path = out_dir / "perturbation_config.json"
+        cache_path = out_dir / "cache_report.json"
 
         outputs.append(
             {
@@ -728,6 +729,8 @@ def _collect_test_outputs(settings: dict[str, Any]) -> list[dict[str, Any]]:
                 "metrics_report": _read_json_if_exists(metrics_path),
                 "perturbation_config_path": str(perturb_path),
                 "perturbation_config": _read_json_if_exists(perturb_path),
+                "cache_report_path": str(cache_path),
+                "cache_report": _read_json_if_exists(cache_path),
             }
         )
     return outputs

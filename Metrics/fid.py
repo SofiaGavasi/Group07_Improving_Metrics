@@ -32,6 +32,16 @@ def _to_2d_float64(features: np.ndarray) :
         raise ValueError("features must be a 2D array of shape [num_samples, feature_dim]")
     return arr
 
+def prepare_features_for_fid(
+    real_features: np.ndarray,
+    fake_features: np.ndarray,
+    max_cov_dim: int = 2048,
+):
+    return _project_high_dim_features(
+        real_features=real_features,
+        fake_features=fake_features,
+        max_cov_dim=max_cov_dim,
+    )
 
 # helper for project high dim features
 def _project_high_dim_features(
@@ -71,13 +81,17 @@ def _project_high_dim_features(
 def compute_fid_from_features(
     real_features: np.ndarray,
     fake_features: np.ndarray,
-    max_cov_dim: int = 2048,
+    max_cov_dim: int | None = 2048,
 ):
-    real_features, fake_features = _project_high_dim_features(
-        real_features=real_features,
-        fake_features=fake_features,
-        max_cov_dim=max_cov_dim,
-    )
+    if max_cov_dim is None or int(max_cov_dim) <= 0:
+        real_features = _to_2d_float64(real_features)
+        fake_features = _to_2d_float64(fake_features)
+    else:
+        real_features, fake_features = _project_high_dim_features(
+            real_features=real_features,
+            fake_features=fake_features,
+            max_cov_dim=max_cov_dim,
+        )
 
     real_mu = np.mean(real_features, axis=0)
     real_sigma = np.cov(real_features, rowvar=False)

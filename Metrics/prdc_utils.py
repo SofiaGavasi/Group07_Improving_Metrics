@@ -3,6 +3,8 @@ from __future__ import annotations
 import numpy as np
 import sklearn.metrics
 
+PAIRWISE_DISTANCE_JOBS = 1
+
 
 # helper for to numpy float32
 def to_numpy_float32(values) -> np.ndarray:
@@ -15,7 +17,12 @@ def to_numpy_float32(values) -> np.ndarray:
 def pairwise_distance(data_x, data_y=None) -> np.ndarray:
     data_x = to_numpy_float32(data_x)
     data_y = data_x if data_y is None else to_numpy_float32(data_y)
-    return sklearn.metrics.pairwise_distances(data_x, data_y, metric="euclidean", n_jobs=8)
+    return sklearn.metrics.pairwise_distances(
+        data_x,
+        data_y,
+        metric="euclidean",
+        n_jobs=int(PAIRWISE_DISTANCE_JOBS),
+    )
 
 
 # helper for kth value

@@ -363,7 +363,9 @@ def _apply_memoisation(
         real_ds=_as_labeled_tensor_dataset(real_samples),
         config=config,
     )
+    # i keep both lists because later we can rebuild fake feature rows without extracting again
     injected_positions = sorted(int(idx) for idx in wrapped.injected.keys())
+    injected_real_indices = [int(wrapped.injected[idx]) for idx in injected_positions]
     details = {
         "fraction": float(config.fraction),
         "seed": int(config.seed),
@@ -372,6 +374,7 @@ def _apply_memoisation(
         "expected_injected": int(expected_injected),
         "injected_count": int(len(injected_positions)),
         "injected_positions": injected_positions,
+        "injected_real_indices": injected_real_indices,
     }
     return _dataset_to_tensor(wrapped, expected_count=int(fake_samples.shape[0])), details
 
@@ -379,7 +382,7 @@ def _apply_sample_size_variation(
     samples: torch.Tensor,
     n: int,
     seed: int,
-) -> torch.Tensor:
+) :
     total = int(samples.shape[0])
 
     if total == 0:
@@ -398,14 +401,15 @@ def _apply_sample_size_variation(
     generator.manual_seed(int(seed))
 
     indices = torch.randperm(total, generator=generator)[: int(n)]
-    return samples[indices]
+    selected_indices = [int(idx) for idx in indices.tolist()]
+    return samples[indices], selected_indices
 
 
 def _apply_preprocessing_variation(
     samples: torch.Tensor,
     variant: str,
     scale: float,
-) -> torch.Tensor:
+) :
     if samples.ndim != 4:
         raise ValueError("Preprocessing variation expects image tensors shaped [N, C, H, W].")
 
@@ -583,13 +587,19 @@ def apply_configured_perturbations(
     if config["sample_size"]["enabled"]:
         n = int(config["sample_size"]["n"])
         seed = int(config["sample_size"]["seed"])
+        # i store the exact picks so the metric cache can reuse baseline features safely
+        sample_size_result: dict[str, Any] = {
+            "n": n,
+            "seed": seed,
+        }
 
         if apply_to_fake:
-            fake_out = _apply_sample_size_variation(
+            fake_out, selected_fake_indices = _apply_sample_size_variation(
                 samples=fake_out,
                 n=n,
                 seed=seed,
             )
+            sample_size_result["selected_indices_fake"] = selected_fake_indices
             config["applied"].append("sample_size:fake")
             _v(f"applied sample_size to fake n={n} -> shape={tuple(fake_out.shape)}")
 
@@ -597,13 +607,16 @@ def apply_configured_perturbations(
             if real_out is None:
                 raise ValueError("Real samples are required for sample-size perturbation on real data.")
 
-            real_out = _apply_sample_size_variation(
+            real_out, selected_real_indices = _apply_sample_size_variation(
                 samples=real_out,
                 n=n,
                 seed=seed + 1,
             )
+            sample_size_result["selected_indices_real"] = selected_real_indices
             config["applied"].append("sample_size:real")
             _v(f"applied sample_size to real n={n} -> shape={tuple(real_out.shape)}")
+
+        config["sample_size"]["result"] = sample_size_result
 
     if config["preprocessing"]["enabled"]:
         variant = str(config["preprocessing"]["variant"])
