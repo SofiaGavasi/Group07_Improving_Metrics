@@ -379,8 +379,8 @@ Current perturbation families include:
 - baseline
 - degradation sweeps
 - memoisation sweeps
-- class removal sweeps (label and kmeans)
-- class imbalance sweeps (label and kmeans)
+- class removal sweeps for StyleGAN2 use only the kmeans target space
+- class imbalance sweeps for StyleGAN2 use only the kmeans target space
 - sample size sweeps
 - preprocessing sweeps
 - domain shift sweeps

@@ -70,14 +70,17 @@ Targets:
 Balance levels:
 - `0.90, 0.75, 0.50, 0.30, 0.15, 0.05`
 
-### StyleGAN2 (CelebA, 41 labels)
+### StyleGAN2 (CelebA)
 
 Targets:
-- label targets: `0`, `1`, `2`, `0,1,2`
-- kmeans targets with `k=10`: `0`, `1`, `2`, `0,1,2`
+- kmeans targets only with `k=10`
+- target sizes: `1`, `3`, `5`
+- size `1`: all 10 single-cluster cases
+- size `3`: up to 6 fixed random combinations
+- size `5`: up to 6 fixed random combinations
 
 Balance levels:
-- `0.90, 0.75, 0.50, 0.30, 0.15, 0.05`
+- `0.90, 0.50, 0.20`
 
 Expected behavior and why:
 - `Recall`, `Coverage`: decrease as under-represented modes disappear.
@@ -94,14 +97,14 @@ Label-removal severity by number of removed classes:
 Implementation detail:
 - targets are generated as first-N class indices (`0..N-1`).
 
-### StyleGAN2 (CelebA, 41 labels)
+### StyleGAN2 (CelebA)
 
-Label removal:
-- remove `1, 4, 8, 16, 32` labels
-
-KMeans cluster removal:
+KMeans cluster removal only:
 - `k=10`
-- remove `1, 2, 4, 6, 8` clusters
+- target sizes: `1`, `3`, `5`
+- size `1`: all 10 single-cluster cases
+- size `3`: up to 6 fixed random combinations
+- size `5`: up to 6 fixed random combinations
 
 Expected behavior and why:
 - `Recall`, `Coverage`: strongest degradation (missing modes/classes).
@@ -151,6 +154,6 @@ Expected behavior and why:
 ## 4) Dataset-Specific Coverage Notes
 
 - MNIST/CIFAR10 (10 classes): class-removal counts map cleanly to class-count severity.
-- CelebA (41 labels): label and kmeans sweeps target both direct label-space and latent group-level bias.
+- CelebA: the active StyleGAN2 suite uses only the kmeans target space over label co-occurrence, not the direct 40-label sweep.
 - ChestXray14-specific class-removal/class-imbalance sweeps are documented conceptually but are not yet in an active dedicated suite in the current `build_experiments_for_suite(...)` routing.
 

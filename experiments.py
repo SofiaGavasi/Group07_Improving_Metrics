@@ -63,7 +63,6 @@ TARGET_COMBO_SIZES = (1, 3, 5)
 TARGET_COMBO_SAMPLE_LIMIT = 6
 TARGET_COMBO_SAMPLE_SEED = 1
 SINGLE_LABEL_DATASET_CLASS_COUNT = 10
-STYLEGAN2_CELEBA_LABEL_COUNT = 40
 STYLEGAN2_CELEBA_KMEANS_K = 10
 
 
@@ -191,10 +190,6 @@ def _build_stylegan2_experiments(
     experiment_base_overrides: dict[str, Any],
 ):
     experiments: list[dict[str, Any]] = []
-    label_target_csvs = _selected_target_csvs(
-        target_count=STYLEGAN2_CELEBA_LABEL_COUNT,
-        sweep_name="stylegan2 celeba label perturbation sweep",
-    )
     kmeans_target_csvs = _selected_target_csvs(
         target_count=STYLEGAN2_CELEBA_KMEANS_K,
         sweep_name="stylegan2 celeba kmeans perturbation sweep",
@@ -255,17 +250,8 @@ def _build_stylegan2_experiments(
             )
         )
 
-    _append_label_class_removal_sweep(
-        experiments=experiments,
-        make_experiment=lambda name, override_updates: _stylegan2_experiment(
-            name=name,
-            override_updates=override_updates,
-            experiment_base_overrides=experiment_base_overrides,
-        ),
-        target_csvs=label_target_csvs,
-    )
-
-    # this still tries every combination for the selected class counts.
+    # for celeba i only keep the clustered target space in the suite
+    # the direct 40-label sweep is too large and not part of the active run plan anymore
     for targets_csv in kmeans_target_csvs:
         experiments.append(
             _stylegan2_experiment(
@@ -282,17 +268,6 @@ def _build_stylegan2_experiments(
         )
 
     imbalance_levels = [0.90, 0.50, 0.2]
-    _append_label_class_imbalance_sweep(
-        experiments=experiments,
-        make_experiment=lambda name, override_updates: _stylegan2_experiment(
-            name=name,
-            override_updates=override_updates,
-            experiment_base_overrides=experiment_base_overrides,
-        ),
-        target_csvs=label_target_csvs,
-        balance_levels=imbalance_levels,
-    )
-
     for cluster_targets in kmeans_target_csvs:
         cluster_tag = _target_name_tag(cluster_targets)
         for balance in imbalance_levels:
