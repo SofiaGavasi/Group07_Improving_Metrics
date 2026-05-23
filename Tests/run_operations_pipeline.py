@@ -199,15 +199,11 @@ def step_smoke_models(_: argparse.Namespace):
     ]
 
 
-def step_test_dcgan_cifar10(args: argparse.Namespace):
-    netg_path = args.dcgan_test_netg or str(Path(args.outputs_root) / "dcgan_cifar10" / "netG_latest.pth")
-    cmd = [
-        PYTHON_EXE,
-        str(SCRIPTS_DIR / "test_dcgan.py"),
+def _dcgan_checkpoint_args(args: argparse.Namespace, *, dataset_name, channels):
+    netg_path = args.dcgan_test_netg or str(Path(args.outputs_root) / f"dcgan_{dataset_name}" / "netG_latest.pth")
+    return [
         "--netG",
         netg_path,
-        "--out-dir",
-        str(Path(args.outputs_root) / "dcgan_cifar10_test"),
         "--num-samples",
         str(args.test_num_samples),
         "--batch-size",
@@ -215,114 +211,22 @@ def step_test_dcgan_cifar10(args: argparse.Namespace):
         "--image-size",
         str(args.image_size),
         "--channels",
-        "3",
+        str(int(channels)),
     ]
-    append_generation_reference_seed_args(cmd, args)
-    if args.eval_metrics:
-        cmd.extend(
-            [
-                "--eval-metrics",
-                "--metrics-dataset",
-                "cifar10",
-                "--metrics-data-root",
-                str(Path(args.data_root) / "CIFAR10"),
-                "--metrics-samples",
-                str(args.metrics_samples),
-                "--metrics-feature-space",
-                str(args.metrics_feature_space),
-                "--metrics-feature-batch-size",
-                str(args.metrics_feature_batch_size),
-                "--metrics-feature-device",
-                str(args.metrics_feature_device),
-                "--metrics-bootstrap-samples",
-                str(args.metrics_bootstrap_samples),
-                "--metrics-bootstrap-seed",
-                str(args.metrics_bootstrap_seed),
-                "--metrics-bootstrap-alpha",
-                str(args.metrics_bootstrap_alpha),
-            ]
-        )
-        if args.metrics_download_if_missing:
-            cmd.append("--metrics-download-if-missing")
-    if args.cuda:
-        cmd.append("--cuda")
-    append_verbose_arg(cmd, args)
-    append_perturbation_args(cmd, args)
-    if args.strict_tests:
-        cmd.append("--strict")
-    return cmd
 
 
-def step_test_dcgan_mnist(args: argparse.Namespace):
-    netg_path = args.dcgan_test_netg or str(Path(args.outputs_root) / "dcgan_mnist" / "netG_latest.pth")
-    cmd = [
-        PYTHON_EXE,
-        str(SCRIPTS_DIR / "test_dcgan.py"),
-        "--netG",
-        netg_path,
-        "--out-dir",
-        str(Path(args.outputs_root) / "dcgan_mnist_test"),
-        "--num-samples",
-        str(args.test_num_samples),
-        "--batch-size",
-        str(args.test_batch_size),
-        "--image-size",
-        str(args.image_size),
-        "--channels",
-        "1",
-    ]
-    append_generation_reference_seed_args(cmd, args)
-    if args.eval_metrics:
-        cmd.extend(
-            [
-                "--eval-metrics",
-                "--metrics-dataset",
-                "mnist",
-                "--metrics-data-root",
-                str(Path(args.data_root) / "MNIST"),
-                "--metrics-samples",
-                str(args.metrics_samples),
-                "--metrics-feature-space",
-                str(args.metrics_feature_space),
-                "--metrics-feature-batch-size",
-                str(args.metrics_feature_batch_size),
-                "--metrics-feature-device",
-                str(args.metrics_feature_device),
-                "--metrics-bootstrap-samples",
-                str(args.metrics_bootstrap_samples),
-                "--metrics-bootstrap-seed",
-                str(args.metrics_bootstrap_seed),
-                "--metrics-bootstrap-alpha",
-                str(args.metrics_bootstrap_alpha),
-            ]
-        )
-        if args.metrics_download_if_missing:
-            cmd.append("--metrics-download-if-missing")
-    if args.cuda:
-        cmd.append("--cuda")
-    append_verbose_arg(cmd, args)
-    append_perturbation_args(cmd, args)
-    if args.strict_tests:
-        cmd.append("--strict")
-    return cmd
-
-
-def step_test_wgangp_cifar10(args: argparse.Namespace):
+def _wgangp_checkpoint_args(args: argparse.Namespace, *, dataset_name, channels):
     generator_path = args.wgangp_test_generator or str(
-        Path(args.outputs_root) / "wgangp_cifar10" / "netG_latest.pth"
+        Path(args.outputs_root) / f"wgangp_{dataset_name}" / "netG_latest.pth"
     )
     critic_path = args.wgangp_test_critic or str(
-        Path(args.outputs_root) / "wgangp_cifar10" / "netD_latest.pth"
+        Path(args.outputs_root) / f"wgangp_{dataset_name}" / "netD_latest.pth"
     )
-    cmd = [
-        PYTHON_EXE,
-        str(SCRIPTS_DIR / "test_wgangp.py"),
+    return [
         "--generator-checkpoint",
         generator_path,
         "--critic-checkpoint",
         critic_path,
-        "--out-dir",
-        str(Path(args.outputs_root) / "wgangp_cifar10_test"),
         "--num-samples",
         str(args.test_num_samples),
         "--batch-size",
@@ -330,246 +234,145 @@ def step_test_wgangp_cifar10(args: argparse.Namespace):
         "--image-size",
         str(args.image_size),
         "--channels",
-        "3",
+        str(int(channels)),
     ]
-    append_generation_reference_seed_args(cmd, args)
-    if args.eval_metrics:
-        cmd.extend(
-            [
-                "--eval-metrics",
-                "--metrics-dataset",
-                "cifar10",
-                "--metrics-data-root",
-                str(Path(args.data_root) / "CIFAR10"),
-                "--metrics-samples",
-                str(args.metrics_samples),
-                "--metrics-feature-space",
-                str(args.metrics_feature_space),
-                "--metrics-feature-batch-size",
-                str(args.metrics_feature_batch_size),
-                "--metrics-feature-device",
-                str(args.metrics_feature_device),
-                "--metrics-bootstrap-samples",
-                str(args.metrics_bootstrap_samples),
-                "--metrics-bootstrap-seed",
-                str(args.metrics_bootstrap_seed),
-                "--metrics-bootstrap-alpha",
-                str(args.metrics_bootstrap_alpha),
-            ]
-        )
-        if args.metrics_download_if_missing:
-            cmd.append("--metrics-download-if-missing")
-    if args.cuda:
-        cmd.append("--cuda")
-    append_verbose_arg(cmd, args)
-    append_perturbation_args(cmd, args)
-    if args.strict_tests:
-        cmd.append("--strict")
-    return cmd
 
 
-def step_test_wgangp_chestxray14(args: argparse.Namespace):
-    generator_path = args.wgangp_test_generator or str(
-        Path(args.outputs_root) / "wgangp_chestxray14" / "netG_latest.pth"
-    )
-    critic_path = args.wgangp_test_critic or str(
-        Path(args.outputs_root) / "wgangp_chestxray14" / "netD_latest.pth"
-    )
-    cmd = [
-        PYTHON_EXE,
-        str(SCRIPTS_DIR / "test_wgangp.py"),
-        "--generator-checkpoint",
-        generator_path,
-        "--critic-checkpoint",
-        critic_path,
-        "--out-dir",
-        str(Path(args.outputs_root) / "wgangp_chestxray14_test"),
-        "--num-samples",
-        str(args.test_num_samples),
-        "--batch-size",
-        str(args.test_batch_size),
-        "--image-size",
-        str(args.image_size),
-        "--channels",
-        "3",
-    ]
-    append_generation_reference_seed_args(cmd, args)
-    if args.eval_metrics:
-        cmd.extend(
-            [
-                "--eval-metrics",
-                "--metrics-dataset",
-                "chestxray14",
-                "--metrics-data-root",
-                str(Path(args.data_root) / "ChestXray14"),
-                "--metrics-samples",
-                str(args.metrics_samples),
-                "--metrics-feature-space",
-                str(args.metrics_feature_space),
-                "--metrics-feature-batch-size",
-                str(args.metrics_feature_batch_size),
-                "--metrics-feature-device",
-                str(args.metrics_feature_device),
-                "--metrics-bootstrap-samples",
-                str(args.metrics_bootstrap_samples),
-                "--metrics-bootstrap-seed",
-                str(args.metrics_bootstrap_seed),
-                "--metrics-bootstrap-alpha",
-                str(args.metrics_bootstrap_alpha),
-            ]
-        )
-        if args.metrics_download_if_missing:
-            cmd.append("--metrics-download-if-missing")
-    if args.cuda:
-        cmd.append("--cuda")
-    append_verbose_arg(cmd, args)
-    append_perturbation_args(cmd, args)
-    if args.strict_tests:
-        cmd.append("--strict")
-    return cmd
-
-
-def step_test_studiogan_cifar10(args: argparse.Namespace):
+def _studiogan_checkpoint_args(args):
     checkpoint = args.studiogan_test_checkpoint or str(
         Path(args.checkpoints_root) / "StudioGAN" / "CIFAR10" / "studioGAN_generator.pkl"
     )
-    cmd = [
-        PYTHON_EXE,
-        str(SCRIPTS_DIR / "test_studiogan.py"),
+    return [
         "--checkpoint",
         checkpoint,
-        "--out-dir",
-        str(Path(args.outputs_root) / "studiogan_cifar10_test"),
         "--num-samples",
         str(args.test_num_samples),
     ]
-    append_generation_reference_seed_args(cmd, args)
-    if args.eval_metrics:
-        cmd.extend(
-            [
-                "--eval-metrics",
-                "--metrics-dataset",
-                "cifar10",
-                "--metrics-data-root",
-                str(Path(args.data_root) / "CIFAR10"),
-                "--metrics-samples",
-                str(args.metrics_samples),
-                "--metrics-feature-space",
-                str(args.metrics_feature_space),
-                "--metrics-feature-batch-size",
-                str(args.metrics_feature_batch_size),
-                "--metrics-feature-device",
-                str(args.metrics_feature_device),
-                "--metrics-bootstrap-samples",
-                str(args.metrics_bootstrap_samples),
-                "--metrics-bootstrap-seed",
-                str(args.metrics_bootstrap_seed),
-                "--metrics-bootstrap-alpha",
-                str(args.metrics_bootstrap_alpha),
-            ]
-        )
-        if args.metrics_download_if_missing:
-            cmd.append("--metrics-download-if-missing")
-    if args.cuda:
-        cmd.append("--cuda")
-    append_verbose_arg(cmd, args)
-    append_perturbation_args(cmd, args)
-    if args.strict_tests:
-        cmd.append("--strict")
-    return cmd
 
 
-def step_test_ddpm_cifar10(args: argparse.Namespace):
+def _ddpm_checkpoint_args(args):
     checkpoint = args.ddpm_test_checkpoint or str(
         Path(args.checkpoints_root) / "DDPM" / "CIFAR10" / "ddpm_model.pth"
     )
-    cmd = [
-        PYTHON_EXE,
-        str(SCRIPTS_DIR / "test_ddpm.py"),
+    return [
         "--checkpoint",
         checkpoint,
-        "--out-dir",
-        str(Path(args.outputs_root) / "ddpm_cifar10_test"),
         "--num-samples",
         str(args.test_num_samples),
     ]
-    append_generation_reference_seed_args(cmd, args)
-    if args.cuda:
-        cmd.append("--cuda")
-    append_verbose_arg(cmd, args)
-    if args.eval_metrics:
-        cmd.extend(
-            [
-                "--eval-metrics",
-                "--metrics-dataset",
-                "cifar10",
-                "--metrics-data-root",
-                str(Path(args.data_root) / "CIFAR10"),
-                "--metrics-samples",
-                str(args.metrics_samples),
-                "--metrics-feature-space",
-                str(args.metrics_feature_space),
-                "--metrics-feature-batch-size",
-                str(args.metrics_feature_batch_size),
-                "--metrics-feature-device",
-                str(args.metrics_feature_device),
-                "--metrics-bootstrap-samples",
-                str(args.metrics_bootstrap_samples),
-                "--metrics-bootstrap-seed",
-                str(args.metrics_bootstrap_seed),
-                "--metrics-bootstrap-alpha",
-                str(args.metrics_bootstrap_alpha),
-            ]
-        )
-        if args.metrics_download_if_missing:
-            cmd.append("--metrics-download-if-missing")
-    append_perturbation_args(cmd, args)
-    if args.strict_tests:
-        cmd.append("--strict")
-    return cmd
 
 
-def step_test_stylegan2_celeba(args: argparse.Namespace):
+def _stylegan2_checkpoint_args(args):
     checkpoint = args.stylegan2_test_checkpoint or str(
         Path(args.checkpoints_root) / "StyleGAN" / "CelebA" / "stylegan2_generator.pkl"
     )
-    cmd = [
-        PYTHON_EXE,
-        str(SCRIPTS_DIR / "test_stylegan2.py"),
+    return [
         "--checkpoint",
         checkpoint,
-        "--out-dir",
-        str(Path(args.outputs_root) / "stylegan2_celeba_test"),
         "--num-samples",
         str(args.test_num_samples),
     ]
+
+
+TEST_STEP_SPECS: dict[str, dict[str, object]] = {
+    "test_dcgan_cifar10": {
+        "script_name": "test_dcgan.py",
+        "out_dir_name": "dcgan_cifar10_test",
+        "metrics_dataset": "cifar10",
+        "metrics_data_root": "CIFAR10",
+        "arg_builder": lambda args: _dcgan_checkpoint_args(args, dataset_name="cifar10", channels=3),
+    },
+    "test_dcgan_mnist": {
+        "script_name": "test_dcgan.py",
+        "out_dir_name": "dcgan_mnist_test",
+        "metrics_dataset": "mnist",
+        "metrics_data_root": "MNIST",
+        "arg_builder": lambda args: _dcgan_checkpoint_args(args, dataset_name="mnist", channels=1),
+    },
+    "test_wgangp_cifar10": {
+        "script_name": "test_wgangp.py",
+        "out_dir_name": "wgangp_cifar10_test",
+        "metrics_dataset": "cifar10",
+        "metrics_data_root": "CIFAR10",
+        "arg_builder": lambda args: _wgangp_checkpoint_args(args, dataset_name="cifar10", channels=3),
+    },
+    "test_wgangp_chestxray14": {
+        "script_name": "test_wgangp.py",
+        "out_dir_name": "wgangp_chestxray14_test",
+        "metrics_dataset": "chestxray14",
+        "metrics_data_root": "ChestXray14",
+        "arg_builder": lambda args: _wgangp_checkpoint_args(args, dataset_name="chestxray14", channels=3),
+    },
+    "test_studiogan_cifar10": {
+        "script_name": "test_studiogan.py",
+        "out_dir_name": "studiogan_cifar10_test",
+        "metrics_dataset": "cifar10",
+        "metrics_data_root": "CIFAR10",
+        "arg_builder": _studiogan_checkpoint_args,
+    },
+    "test_ddpm_cifar10": {
+        "script_name": "test_ddpm.py",
+        "out_dir_name": "ddpm_cifar10_test",
+        "metrics_dataset": "cifar10",
+        "metrics_data_root": "CIFAR10",
+        "arg_builder": _ddpm_checkpoint_args,
+    },
+    "test_stylegan2_celeba": {
+        "script_name": "test_stylegan2.py",
+        "out_dir_name": "stylegan2_celeba_test",
+        "metrics_dataset": "celeba",
+        "metrics_data_root": "CelebA",
+        "arg_builder": _stylegan2_checkpoint_args,
+    },
+}
+
+
+def _append_common_test_metric_args(cmd, args, spec) :
+    if not args.eval_metrics:
+        return
+
+    cmd.extend(
+        [
+            "--eval-metrics",
+            "--metrics-dataset",
+            str(spec["metrics_dataset"]),
+            "--metrics-data-root",
+            str(Path(args.data_root) / str(spec["metrics_data_root"])),
+            "--metrics-samples",
+            str(args.metrics_samples),
+            "--metrics-feature-space",
+            str(args.metrics_feature_space),
+            "--metrics-feature-batch-size",
+            str(args.metrics_feature_batch_size),
+            "--metrics-feature-device",
+            str(args.metrics_feature_device),
+            "--metrics-bootstrap-samples",
+            str(args.metrics_bootstrap_samples),
+            "--metrics-bootstrap-seed",
+            str(args.metrics_bootstrap_seed),
+            "--metrics-bootstrap-alpha",
+            str(args.metrics_bootstrap_alpha),
+        ]
+    )
+    if args.metrics_download_if_missing:
+        cmd.append("--metrics-download-if-missing")
+
+
+def _build_test_step_command(args: argparse.Namespace, step_name: str) -> list[str]:
+    spec = TEST_STEP_SPECS[step_name]
+    cmd = [
+        PYTHON_EXE,
+        str(SCRIPTS_DIR / str(spec["script_name"])),
+    ]
+    cmd.extend(list(spec["arg_builder"](args)))
+    cmd.extend(
+        [
+            "--out-dir",
+            str(Path(args.outputs_root) / str(spec["out_dir_name"])),
+        ]
+    )
     append_generation_reference_seed_args(cmd, args)
-    if args.eval_metrics:
-        cmd.extend(
-            [
-                "--eval-metrics",
-                "--metrics-dataset",
-                "celeba",
-                "--metrics-data-root",
-                str(Path(args.data_root) / "CelebA"),
-                "--metrics-samples",
-                str(args.metrics_samples),
-                "--metrics-feature-space",
-                str(args.metrics_feature_space),
-                "--metrics-feature-batch-size",
-                str(args.metrics_feature_batch_size),
-                "--metrics-feature-device",
-                str(args.metrics_feature_device),
-                "--metrics-bootstrap-samples",
-                str(args.metrics_bootstrap_samples),
-                "--metrics-bootstrap-seed",
-                str(args.metrics_bootstrap_seed),
-                "--metrics-bootstrap-alpha",
-                str(args.metrics_bootstrap_alpha),
-            ]
-        )
-        if args.metrics_download_if_missing:
-            cmd.append("--metrics-download-if-missing")
+    _append_common_test_metric_args(cmd, args, spec)
     if args.cuda:
         cmd.append("--cuda")
     append_verbose_arg(cmd, args)
@@ -577,6 +380,34 @@ def step_test_stylegan2_celeba(args: argparse.Namespace):
     if args.strict_tests:
         cmd.append("--strict")
     return cmd
+
+
+def step_test_dcgan_cifar10(args: argparse.Namespace):
+    return _build_test_step_command(args, "test_dcgan_cifar10")
+
+
+def step_test_dcgan_mnist(args: argparse.Namespace):
+    return _build_test_step_command(args, "test_dcgan_mnist")
+
+
+def step_test_wgangp_cifar10(args: argparse.Namespace):
+    return _build_test_step_command(args, "test_wgangp_cifar10")
+
+
+def step_test_wgangp_chestxray14(args: argparse.Namespace):
+    return _build_test_step_command(args, "test_wgangp_chestxray14")
+
+
+def step_test_studiogan_cifar10(args: argparse.Namespace):
+    return _build_test_step_command(args, "test_studiogan_cifar10")
+
+
+def step_test_ddpm_cifar10(args: argparse.Namespace):
+    return _build_test_step_command(args, "test_ddpm_cifar10")
+
+
+def step_test_stylegan2_celeba(args: argparse.Namespace):
+    return _build_test_step_command(args, "test_stylegan2_celeba")
 
 
 def append_subset_args(cmd: list[str], args: argparse.Namespace):

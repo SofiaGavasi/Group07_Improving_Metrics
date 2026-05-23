@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 import numpy as np
 import torch
+import argparse
 
 
 @dataclass
@@ -15,6 +16,84 @@ class PreparedTestRun:
     generate_samples: Callable[[int | None], torch.Tensor]
     resolve_reference_request: Callable[[Any, int], tuple[str, str, int]]
     cleanup: Callable[[], None] | None = None
+
+
+def add_common_test_args(
+    parser: argparse.ArgumentParser,
+    *,
+    metrics_dataset_default: str,
+    metrics_dataset_choices,
+    metrics_data_root_default: str,
+    metrics_image_size_default = None,
+    eval_metrics_default = False,
+):
+    parser.add_argument(
+        "--eval-metrics",
+        action=argparse.BooleanOptionalAction,
+        default=bool(eval_metrics_default),
+    )
+    parser.add_argument(
+        "--metrics-dataset",
+        type=str,
+        default=str(metrics_dataset_default),
+        choices=list(metrics_dataset_choices),
+    )
+    parser.add_argument(
+        "--metrics-data-root",
+        type=str,
+        default=str(metrics_data_root_default),
+    )
+    if metrics_image_size_default is not None:
+        parser.add_argument("--metrics-image-size", type=int, default=int(metrics_image_size_default))
+    parser.add_argument("--metrics-samples", type=int, default=64)
+    parser.add_argument(
+        "--metrics-download-if-missing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--metrics-feature-space", type=str, default="inception_v3")
+    parser.add_argument("--metrics-feature-batch-size", type=int, default=64)
+    parser.add_argument("--metrics-feature-device", type=str, default="cpu", choices=["cpu", "cuda"])
+    parser.add_argument("--metrics-bootstrap-samples", type=int, default=0)
+    parser.add_argument("--metrics-bootstrap-seed", type=int, default=10)
+    parser.add_argument("--metrics-bootstrap-alpha", type=float, default=0.05)
+    parser.add_argument("--seed", type=int, default=10)
+    parser.add_argument("--generation-seed", type=int, default=None)
+    parser.add_argument("--reference-seed", type=int, default=None)
+    parser.add_argument(
+        "--verbose",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable verbose logging for generation, perturbations, and metrics.",
+    )
+
+
+def resolve_reference_request(args: Any, default_image_size: int, override):
+    if override is None:
+        image_size = int(getattr(args, "image_size", 0) or default_image_size)
+        return args.metrics_dataset, args.metrics_data_root, image_size
+
+    override_image_size = int(override["image_size"])
+    if override_image_size <= 0:
+        override_image_size = int(getattr(args, "image_size", 0) or default_image_size)
+    return str(override["dataset"]), str(override["data_root"]), override_image_size
+
+
+def get_generation_seed(args: Any) :
+    return int(args.seed if getattr(args, "generation_seed", None) is None else args.generation_seed)
+
+
+def get_reference_seed(args: Any) :
+    return int(get_generation_seed(args) if getattr(args, "reference_seed", None) is None else args.reference_seed)
+
+
+def initialize_test_run(args: Any, *, context: str):
+    set_deterministic_seed(
+        seed=get_generation_seed(args),
+        verbose=bool(getattr(args, "verbose", False)),
+        context=context,
+    )
+    args.reference_seed = get_reference_seed(args)
 
 
 def close_prepared_test_run(prepared):

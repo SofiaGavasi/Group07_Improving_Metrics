@@ -19,8 +19,11 @@ from Perturbation.pipeline_perturbations import add_perturbation_args, get_domai
 from Scripts.evaluation_runtime import EvaluationArtifacts, EvaluationReuseSession, file_signature, run_cached_evaluation
 from Scripts.test_runtime_utils import (
     PreparedTestRun,
+    add_common_test_args,
     close_prepared_test_run,
-    set_deterministic_seed,
+    get_generation_seed,
+    initialize_test_run,
+    resolve_reference_request,
 )
 
 
@@ -35,72 +38,25 @@ def parse_args(argv= None):
     parser.add_argument("--num-samples", type=int, default=64)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--num-inference-steps", type=int, default=None)
-    parser.add_argument("--seed", type=int, default=10)
-    parser.add_argument("--generation-seed", type=int, default=None)
-    parser.add_argument("--reference-seed", type=int, default=None)
     parser.add_argument("--cuda", action="store_true")
-    parser.add_argument(
-        "--eval-metrics",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="If enabled, compute metrics with Metrics/compute_all.py and save JSON report.",
-    )
-    parser.add_argument(
-        "--metrics-dataset",
-        type=str,
-        default="cifar10",
-        choices=["mnist", "cifar10", "celeba", "chestxray14"],
-        help="Dataset used as real reference distribution during metric evaluation.",
-    )
-    parser.add_argument(
-        "--metrics-data-root",
-        type=str,
-        default="data/CIFAR10",
-        help="Data root for metrics real samples.",
-    )
-    parser.add_argument("--metrics-image-size", type=int, default=32)
-    parser.add_argument("--metrics-samples", type=int, default=64)
-    parser.add_argument("--metrics-feature-space", type=str, default="inception_v3")
-    parser.add_argument("--metrics-feature-batch-size", type=int, default=64)
-    parser.add_argument("--metrics-feature-device", type=str, default="cpu", choices=["cpu", "cuda"])
-    parser.add_argument("--metrics-bootstrap-samples", type=int, default=0)
-    parser.add_argument("--metrics-bootstrap-seed", type=int, default=10)
-    parser.add_argument("--metrics-bootstrap-alpha", type=float, default=0.05)
-    parser.add_argument(
-        "--metrics-download-if-missing",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Allow dataset download/setup fallback during metric evaluation if files are missing.",
+    add_common_test_args(
+        parser,
+        metrics_dataset_default="cifar10",
+        metrics_dataset_choices=["mnist", "cifar10", "celeba", "chestxray14"],
+        metrics_data_root_default="data/CIFAR10",
+        metrics_image_size_default=32,
     )
     parser.add_argument(
         "--strict",
         action="store_true",
         help="Fail on errors instead of skipping.",
     )
-    parser.add_argument(
-        "--verbose",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Enable verbose logging for generation, perturbations, and metrics.",
-    )
     add_perturbation_args(parser)
     return parser.parse_args(argv)
 
 
 def _resolve_real_reference_request(args: argparse.Namespace, default_image_size: int):
-    override = get_domain_shift_override(args)
-    if override is None:
-        return args.metrics_dataset, args.metrics_data_root, int(default_image_size)
-    image_size = int(override["image_size"]) if int(override["image_size"]) > 0 else int(default_image_size)
-    return str(override["dataset"]), str(override["data_root"]), image_size
-
-
-def _generation_seed(args):
-    return int(args.seed if args.generation_seed is None else args.generation_seed)
-
-
-def _reference_seed(args):
-    return int(_generation_seed(args) if args.reference_seed is None else args.reference_seed)
+    return resolve_reference_request(args, default_image_size, get_domain_shift_override(args))
 
 
 def _build_generation_payload(args: argparse.Namespace, checkpoint: Path):
@@ -110,7 +66,7 @@ def _build_generation_payload(args: argparse.Namespace, checkpoint: Path):
         "num_samples": int(args.num_samples),
         "batch_size": int(args.batch_size),
         "num_inference_steps": None if args.num_inference_steps is None else int(args.num_inference_steps),
-        "generation_seed": _generation_seed(args),
+        "generation_seed": get_generation_seed(args),
     }
 
 
@@ -146,8 +102,7 @@ def _generate_in_batches(
 
 
 def prepare_run(args):
-    set_deterministic_seed(seed=_generation_seed(args), verbose=bool(args.verbose), context="test_ddpm")
-    args.reference_seed = _reference_seed(args)
+    initialize_test_run(args, context="test_ddpm")
 
     checkpoint = Path(args.checkpoint)
     if not checkpoint.exists():
@@ -169,7 +124,7 @@ def prepare_run(args):
             batch_size=max(1, int(args.batch_size)),
             device=device,
             num_inference_steps=args.num_inference_steps,
-            seed=_generation_seed(args),
+            seed=get_generation_seed(args),
         ),
         resolve_reference_request=_resolve_real_reference_request,
         cleanup=None,

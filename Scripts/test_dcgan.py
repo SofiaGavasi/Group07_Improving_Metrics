@@ -16,8 +16,11 @@ from Perturbation.pipeline_perturbations import add_perturbation_args, get_domai
 from Scripts.evaluation_runtime import EvaluationArtifacts, EvaluationReuseSession, file_signature, run_cached_evaluation
 from Scripts.test_runtime_utils import (
     PreparedTestRun,
+    add_common_test_args,
     close_prepared_test_run,
-    set_deterministic_seed,
+    get_generation_seed,
+    initialize_test_run,
+    resolve_reference_request,
 )
 
 
@@ -33,43 +36,12 @@ def parse_args(argv= None):
     parser.add_argument("--image-size", type=int, default=32)
     parser.add_argument("--cuda", action="store_true")
     parser.add_argument("--strict", action="store_true")
-    parser.add_argument(
-        "--eval-metrics",
-        action=argparse.BooleanOptionalAction,
-        default=False
+    add_common_test_args(
+        parser,
+        metrics_dataset_default="cifar10",
+        metrics_dataset_choices=["mnist", "cifar10"],
+        metrics_data_root_default="data/CIFAR10",
     )
-    parser.add_argument(
-        "--metrics-dataset",
-        type=str,
-        default="cifar10",
-        choices=["mnist", "cifar10"]
-    )
-    parser.add_argument(
-        "--metrics-data-root",
-        type=str,
-        default="data/CIFAR10"
-    )
-    parser.add_argument("--metrics-samples", type=int, default=64)
-    parser.add_argument(
-        "--metrics-download-if-missing",
-        action=argparse.BooleanOptionalAction,
-        default=False
-    )
-    parser.add_argument(
-        "--verbose",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Enable verbose logging for generation, perturbations, and metrics.",
-    )
-    parser.add_argument("--metrics-feature-space", type=str, default="inception_v3")
-    parser.add_argument("--metrics-feature-batch-size", type=int, default=64)
-    parser.add_argument("--metrics-feature-device", type=str, default="cpu", choices=["cpu", "cuda"])
-    parser.add_argument("--metrics-bootstrap-samples", type=int, default=0)
-    parser.add_argument("--metrics-bootstrap-seed", type=int, default=10)
-    parser.add_argument("--metrics-bootstrap-alpha", type=float, default=0.05)
-    parser.add_argument("--seed", type=int, default=10)
-    parser.add_argument("--generation-seed", type=int, default=None)
-    parser.add_argument("--reference-seed", type=int, default=None)
     add_perturbation_args(parser)
     return parser.parse_args(argv)
 
@@ -78,19 +50,7 @@ def parse_args(argv= None):
 
 
 def _resolve_real_reference_request(args: argparse.Namespace, default_image_size: int):
-    override = get_domain_shift_override(args)
-    if override is None:
-        return args.metrics_dataset, args.metrics_data_root, int(args.image_size or default_image_size)
-    image_size = int(override["image_size"]) if int(override["image_size"]) > 0 else int(args.image_size or default_image_size)
-    return str(override["dataset"]), str(override["data_root"]), image_size
-
-
-def _generation_seed(args):
-    return int(args.seed if args.generation_seed is None else args.generation_seed)
-
-
-def _reference_seed(args):
-    return int(_generation_seed(args) if args.reference_seed is None else args.reference_seed)
+    return resolve_reference_request(args, default_image_size, get_domain_shift_override(args))
 
 
 def _build_generation_payload(args: argparse.Namespace, checkpoint_path: Path):
@@ -102,7 +62,7 @@ def _build_generation_payload(args: argparse.Namespace, checkpoint_path: Path):
         "ngf": int(args.ngf),
         "channels": int(args.channels),
         "image_size": int(args.image_size),
-        "generation_seed": _generation_seed(args),
+        "generation_seed": get_generation_seed(args),
     }
 
 
@@ -116,7 +76,7 @@ def _generate_samples(
     generated: list[torch.Tensor] = []
     remaining = int(args.num_samples) if total_samples is None else int(total_samples)
     latent_rng = torch.Generator(device=device)
-    latent_rng.manual_seed(_generation_seed(args))
+    latent_rng.manual_seed(get_generation_seed(args))
     with torch.no_grad():
         while remaining > 0:
             this_batch = min(int(args.batch_size), remaining)
@@ -127,8 +87,7 @@ def _generate_samples(
 
 
 def prepare_run(args):
-    set_deterministic_seed(seed=_generation_seed(args), verbose=bool(args.verbose), context="test_dcgan")
-    args.reference_seed = _reference_seed(args)
+    initialize_test_run(args, context="test_dcgan")
 
     netg_path = Path(args.netG)
     if not netg_path.exists():
