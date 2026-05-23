@@ -75,6 +75,8 @@ WGANGP_BATCH_SIZE = 64  # Batch size for WGAN-GP training steps.
 # test stuff:
 TEST_NUM_SAMPLES = 1280  # Number of fake samples generated per test script run.
 TEST_BATCH_SIZE = 64  # Generation batch size used in test scripts.
+#GENERATION_SEED = 1  # RNG seed for fake sample generation in model test scripts  (I moved it down so its easier to change)
+REFERENCE_SEED = 10  # RNG seed for choosing the real reference subset during metric evaluation
 
 
 # metric evaluation during test stage:
@@ -170,7 +172,8 @@ SUBSET_DROP_CLASSES = ""  # Optional class filter drop list (comma-separated).
 
 #______________________________________________________________________________
 # batch naming to keep large experiment campaigns easy to identify.
-BATCH_NAME = "seed_10"  # Logical campaign name used in output/report paths.
+BATCH_NAME = "seed_01"  # Logical campaign name used in output/report paths
+GENERATION_SEED = 1 
 
 # active batch suite:
 # - "dcgan_pretrained_both" (default): runs both user-provided DCGAN checkpoints
@@ -236,6 +239,8 @@ def _default_settings() -> dict[str, Any]:
         "WGANGP_BATCH_SIZE": WGANGP_BATCH_SIZE,
         "TEST_NUM_SAMPLES": TEST_NUM_SAMPLES,
         "TEST_BATCH_SIZE": TEST_BATCH_SIZE,
+        "GENERATION_SEED": GENERATION_SEED,
+        "REFERENCE_SEED": REFERENCE_SEED,
         "EVAL_METRICS": EVAL_METRICS,
         "METRICS_SAMPLES": METRICS_SAMPLES,
         "METRICS_DOWNLOAD_IF_MISSING": METRICS_DOWNLOAD_IF_MISSING,
@@ -459,6 +464,10 @@ def _build_pipeline_command(pipeline_script: Path, settings: dict[str, Any]) -> 
         str(settings["TEST_NUM_SAMPLES"]),
         "--test-batch-size",
         str(settings["TEST_BATCH_SIZE"]),
+        "--generation-seed",
+        str(settings["GENERATION_SEED"]),
+        "--reference-seed",
+        str(settings["REFERENCE_SEED"]),
         "--metrics-samples",
         str(settings["METRICS_SAMPLES"]),
         "--metrics-feature-space",

@@ -211,6 +211,20 @@ def dataset_class_names(dataset):
     return []
 
 
+def _generation_seed(args):
+    value = getattr(args, "generation_seed", None)
+    if value is None:
+        value = getattr(args, "seed", 0)
+    return int(value)
+
+
+def _reference_seed(args):
+    value = getattr(args, "reference_seed", None)
+    if value is None:
+        value = getattr(args, "seed", 0)
+    return int(value)
+
+
 
 
 #__________________________________________________________
@@ -1258,7 +1272,7 @@ def run_cached_evaluation(
                 image_size=int(ref_image_size),
                 sample_count=reference_count,
                 download_if_missing=bool(getattr(args, "metrics_download_if_missing", False)),
-                seed=int(getattr(args, "seed", 0)),
+                seed=_reference_seed(args),
                 verbose=verbose,
             )
 

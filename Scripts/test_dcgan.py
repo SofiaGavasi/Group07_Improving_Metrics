@@ -68,6 +68,8 @@ def parse_args(argv= None):
     parser.add_argument("--metrics-bootstrap-seed", type=int, default=10)
     parser.add_argument("--metrics-bootstrap-alpha", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=10)
+    parser.add_argument("--generation-seed", type=int, default=None)
+    parser.add_argument("--reference-seed", type=int, default=None)
     add_perturbation_args(parser)
     return parser.parse_args(argv)
 
@@ -83,6 +85,14 @@ def _resolve_real_reference_request(args: argparse.Namespace, default_image_size
     return str(override["dataset"]), str(override["data_root"]), image_size
 
 
+def _generation_seed(args):
+    return int(args.seed if args.generation_seed is None else args.generation_seed)
+
+
+def _reference_seed(args):
+    return int(_generation_seed(args) if args.reference_seed is None else args.reference_seed)
+
+
 def _build_generation_payload(args: argparse.Namespace, checkpoint_path: Path):
     return {
         "model_name": "dcgan",
@@ -92,7 +102,7 @@ def _build_generation_payload(args: argparse.Namespace, checkpoint_path: Path):
         "ngf": int(args.ngf),
         "channels": int(args.channels),
         "image_size": int(args.image_size),
-        "seed": int(args.seed),
+        "generation_seed": _generation_seed(args),
     }
 
 
@@ -106,7 +116,7 @@ def _generate_samples(
     generated: list[torch.Tensor] = []
     remaining = int(args.num_samples) if total_samples is None else int(total_samples)
     latent_rng = torch.Generator(device=device)
-    latent_rng.manual_seed(int(args.seed))
+    latent_rng.manual_seed(_generation_seed(args))
     with torch.no_grad():
         while remaining > 0:
             this_batch = min(int(args.batch_size), remaining)
@@ -117,7 +127,8 @@ def _generate_samples(
 
 
 def prepare_run(args):
-    set_deterministic_seed(seed=int(args.seed), verbose=bool(args.verbose), context="test_dcgan")
+    set_deterministic_seed(seed=_generation_seed(args), verbose=bool(args.verbose), context="test_dcgan")
+    args.reference_seed = _reference_seed(args)
 
     netg_path = Path(args.netG)
     if not netg_path.exists():

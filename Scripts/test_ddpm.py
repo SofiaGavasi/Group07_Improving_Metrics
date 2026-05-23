@@ -36,6 +36,8 @@ def parse_args(argv= None):
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--num-inference-steps", type=int, default=None)
     parser.add_argument("--seed", type=int, default=10)
+    parser.add_argument("--generation-seed", type=int, default=None)
+    parser.add_argument("--reference-seed", type=int, default=None)
     parser.add_argument("--cuda", action="store_true")
     parser.add_argument(
         "--eval-metrics",
@@ -93,6 +95,14 @@ def _resolve_real_reference_request(args: argparse.Namespace, default_image_size
     return str(override["dataset"]), str(override["data_root"]), image_size
 
 
+def _generation_seed(args):
+    return int(args.seed if args.generation_seed is None else args.generation_seed)
+
+
+def _reference_seed(args):
+    return int(_generation_seed(args) if args.reference_seed is None else args.reference_seed)
+
+
 def _build_generation_payload(args: argparse.Namespace, checkpoint: Path):
     return {
         "model_name": str(args.mode),
@@ -100,7 +110,7 @@ def _build_generation_payload(args: argparse.Namespace, checkpoint: Path):
         "num_samples": int(args.num_samples),
         "batch_size": int(args.batch_size),
         "num_inference_steps": None if args.num_inference_steps is None else int(args.num_inference_steps),
-        "seed": int(args.seed),
+        "generation_seed": _generation_seed(args),
     }
 
 
@@ -136,7 +146,8 @@ def _generate_in_batches(
 
 
 def prepare_run(args):
-    set_deterministic_seed(seed=int(args.seed), verbose=bool(args.verbose), context="test_ddpm")
+    set_deterministic_seed(seed=_generation_seed(args), verbose=bool(args.verbose), context="test_ddpm")
+    args.reference_seed = _reference_seed(args)
 
     checkpoint = Path(args.checkpoint)
     if not checkpoint.exists():
@@ -158,7 +169,7 @@ def prepare_run(args):
             batch_size=max(1, int(args.batch_size)),
             device=device,
             num_inference_steps=args.num_inference_steps,
-            seed=args.seed,
+            seed=_generation_seed(args),
         ),
         resolve_reference_request=_resolve_real_reference_request,
         cleanup=None,

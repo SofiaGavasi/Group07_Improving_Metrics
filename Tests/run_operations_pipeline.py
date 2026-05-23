@@ -217,6 +217,7 @@ def step_test_dcgan_cifar10(args: argparse.Namespace):
         "--channels",
         "3",
     ]
+    append_generation_reference_seed_args(cmd, args)
     if args.eval_metrics:
         cmd.extend(
             [
@@ -270,6 +271,7 @@ def step_test_dcgan_mnist(args: argparse.Namespace):
         "--channels",
         "1",
     ]
+    append_generation_reference_seed_args(cmd, args)
     if args.eval_metrics:
         cmd.extend(
             [
@@ -330,6 +332,7 @@ def step_test_wgangp_cifar10(args: argparse.Namespace):
         "--channels",
         "3",
     ]
+    append_generation_reference_seed_args(cmd, args)
     if args.eval_metrics:
         cmd.extend(
             [
@@ -390,6 +393,7 @@ def step_test_wgangp_chestxray14(args: argparse.Namespace):
         "--channels",
         "3",
     ]
+    append_generation_reference_seed_args(cmd, args)
     if args.eval_metrics:
         cmd.extend(
             [
@@ -439,6 +443,7 @@ def step_test_studiogan_cifar10(args: argparse.Namespace):
         "--num-samples",
         str(args.test_num_samples),
     ]
+    append_generation_reference_seed_args(cmd, args)
     if args.eval_metrics:
         cmd.extend(
             [
@@ -488,6 +493,7 @@ def step_test_ddpm_cifar10(args: argparse.Namespace):
         "--num-samples",
         str(args.test_num_samples),
     ]
+    append_generation_reference_seed_args(cmd, args)
     if args.cuda:
         cmd.append("--cuda")
     append_verbose_arg(cmd, args)
@@ -537,6 +543,7 @@ def step_test_stylegan2_celeba(args: argparse.Namespace):
         "--num-samples",
         str(args.test_num_samples),
     ]
+    append_generation_reference_seed_args(cmd, args)
     if args.eval_metrics:
         cmd.extend(
             [
@@ -583,6 +590,11 @@ def append_subset_args(cmd: list[str], args: argparse.Namespace):
         cmd.extend(["--subset-include-classes", args.subset_include_classes.strip()])
     if args.subset_drop_classes.strip():
         cmd.extend(["--subset-drop-classes", args.subset_drop_classes.strip()])
+
+
+def append_generation_reference_seed_args(cmd: list[str], args: argparse.Namespace):
+    cmd.extend(["--generation-seed", str(args.generation_seed)])
+    cmd.extend(["--reference-seed", str(args.reference_seed)])
 
 
 def append_verbose_arg(cmd: list[str], args: argparse.Namespace):
@@ -787,6 +799,8 @@ def parse_args():
     parser.add_argument("--wgangp-batch-size", type=int, default=64)
     parser.add_argument("--test-num-samples", type=int, default=64)
     parser.add_argument("--test-batch-size", type=int, default=64)
+    parser.add_argument("--generation-seed", type=int, default=10)
+    parser.add_argument("--reference-seed", type=int, default=10)
     parser.add_argument("--dcgan-test-netg", type=str, default="")
     parser.add_argument("--wgangp-test-generator", type=str, default="")
     parser.add_argument("--wgangp-test-critic", type=str, default="")

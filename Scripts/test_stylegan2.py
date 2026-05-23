@@ -30,6 +30,8 @@ def parse_args(argv= None):
     parser.add_argument("--noise-mode", type=str, default="const", choices=["const", "random", "none"])
     parser.add_argument("--class-idx", type=int, default=None)
     parser.add_argument("--seed", type=int, default=10)
+    parser.add_argument("--generation-seed", type=int, default=None)
+    parser.add_argument("--reference-seed", type=int, default=None)
     parser.add_argument("--cuda", action="store_true")
     parser.add_argument(
         "--eval-metrics",
@@ -87,6 +89,14 @@ def _resolve_real_reference_request(args: argparse.Namespace, default_image_size
     return str(override["dataset"]), str(override["data_root"]), image_size
 
 
+def _generation_seed(args):
+    return int(args.seed if args.generation_seed is None else args.generation_seed)
+
+
+def _reference_seed(args):
+    return int(_generation_seed(args) if args.reference_seed is None else args.reference_seed)
+
+
 def _build_generation_payload(args: argparse.Namespace, checkpoint):
     return {
         "model_name": "stylegan2",
@@ -96,7 +106,7 @@ def _build_generation_payload(args: argparse.Namespace, checkpoint):
         "truncation_psi": float(args.truncation_psi),
         "noise_mode": str(args.noise_mode),
         "class_idx": None if args.class_idx is None else int(args.class_idx),
-        "seed": int(args.seed),
+        "generation_seed": _generation_seed(args),
     }
 
 
@@ -134,7 +144,8 @@ def _generate_in_batches(
 
 
 def prepare_run(args) :
-    set_deterministic_seed(seed=int(args.seed), verbose=bool(args.verbose), context="test_stylegan2")
+    set_deterministic_seed(seed=_generation_seed(args), verbose=bool(args.verbose), context="test_stylegan2")
+    args.reference_seed = _reference_seed(args)
 
     checkpoint = Path(args.checkpoint)
     if not checkpoint.exists():
@@ -157,7 +168,7 @@ def prepare_run(args) :
             truncation_psi=float(args.truncation_psi),
             noise_mode=str(args.noise_mode),
             class_idx=args.class_idx,
-            seed=args.seed,
+            seed=_generation_seed(args),
         ),
         resolve_reference_request=_resolve_real_reference_request,
         cleanup=None,
