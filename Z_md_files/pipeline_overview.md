@@ -21,14 +21,15 @@ The main entry point is `main.py`.
 The pipeline flow is:
 
 1. Configure run settings in `main.py`.
-2. Build one command for `Tests/run_operations_pipeline.py`.
-3. `Tests/run_operations_pipeline.py` expands profile or explicit step list.
-4. It calls scripts in `Scripts/` for each step.
-5. Test scripts generate fake samples and optionally load real reference samples.
-6. If perturbations are enabled, `Perturbation/pipeline_perturbations.py` applies them.
-7. Metrics are computed through `Metrics/compute_all.py`.
-8. Results are saved per test run in `outputs/.../metrics_report.json`.
-9. Batch mode in `main.py` records each experiment in a campaign report JSON in `outputs/`.
+2. `main.py` either runs one pipeline command or starts batch mode.
+3. In batch mode, `main.py` now tries to reuse one in-process test session for compatible test experiments
+4. `Tests/run_operations_pipeline.py` still builds step commands and profiles, and it is also used to reconstruct commands when needed
+5. Test scripts in `Scripts/` prepare model-specific generation callbacks and pass them into `Scripts/evaluation_runtime.py`.
+6. `Scripts/evaluation_runtime.py` loads or reuses fake sample caches, real reference caches, feature caches, and assignment caches.
+7. If perturbations are enabled, `Perturbation/pipeline_perturbations.py` applies them and writes a structured perturbation report
+8. Metrics are computed through `Metrics/compute_all.py`, usually from cached extracted features instead of raw images
+9. Results are saved per test run in `outputs/.../metrics_report.json`, `perturbation_config.json`, and `cache_report.json`.
+10. Batch mode in `main.py` records each experiment in a campaign report JSON in `outputs/`
 
 
 ## 3. Top-level Folders and Files
@@ -68,9 +69,9 @@ This folder contains all metric implementations.
 
 - `Metrics/compute_all.py`
   - Main orchestrator.
-  - Extracts Inception features once for real and fake samples.
-  - Computes all metrics from those features/probabilities.
-  - Adds bootstrap confidence intervals when configured.
+  - Can compute metrics directly from cached feature arrays
+  - Stores metric metadata, including bootstrap policy and requested bootstrap count
+  - Bootstrap is now used only for the baseline and sample-size experiments by default
 
 - `Metrics/inception_features.py`
   - Loads pretrained torchvision Inception-v3.
@@ -155,16 +156,28 @@ This folder contains perturbation definitions and the perturbation pipeline.
   - Replaces a fraction of fake samples with real samples.
 
 - `Perturbation/class_removal.py`
-  - Removes fake samples predicted as selected class targets.
+  - Removes selected fake class targets
+  - Can now keep metric evaluation count fixed by selecting `evaluation_indices` from a larger fake pool.
   - Supports:
     - label strategy
     - kmeans-over-label-cooccurrence strategy
 
 - `Perturbation/class_imbalance.py`
   - Downsamples selected fake class targets instead of removing all.
+  - Can now keep metric evaluation count fixed by selecting `evaluation_indices` from a larger fake pool.
   - Supports:
     - label strategy
     - kmeans-over-label-cooccurrence strategy
+
+- `Perturbation/class_assignment_cache.py`
+  - Builds reusable fake-to-class assignment context once per fake pool and reference bundle
+  - Stores nearest-class assignments for single-label datasets
+  - Stores margin scores for multi-label datasets
+
+- `Perturbation/class_fixed_eval.py`
+  - Implements fixed-count evaluation sampling for class-removal and class-imbalance experiments
+  - Uses exact per-class quota sampling for single-label cases
+  - Uses survivor subset sampling for multi-label cases
 
 - `Perturbation/__init__.py`
   - package marker.
@@ -195,10 +208,18 @@ This folder contains executable scripts used by pipeline steps.
   - `Scripts/test_ddpm.py`
   - `Scripts/test_stylegan2.py`
   - All test scripts support perturbation args and optional metric evaluation.
+  - All test scripts now expose reusable `prepare_run(...)` and `run_with_args(...)` entrypoints for in-process batch reuse
+
+- Shared runtime:
+  - `Scripts/evaluation_runtime.py`
+  - Central cache-aware evaluation flow for fake generation, real reference loading, perturbations, feature reuse, and metric execution
+  - Owns the shared cache under `outputs/shared_eval_cache/`
+
+- Shared test helpers:
+  - `Scripts/test_runtime_utils.py`
+  - Defines reusable prepared-run interface and shared seed helpers
 
 - Analysis/helper scripts:
-  - `Scripts/statistical_measures.py`
-  - `Scripts/visualize_perturbation_testsV2X.py`
   - `Scripts/__init__.py`
 
 
@@ -211,7 +232,7 @@ This folder contains orchestration and smoke/example utilities.
   - Defines run profiles (`setup`, `train`, `test`, `full`, `smoke`).
   - Appends common args (metrics, subset, perturbations, verbosity).
   - Executes each step command.
-  - Writes `test_runs_log.csv` with command and metric output snapshots.
+  - Still acts as the command builder for the pipeline and for batch reconstruction
 
 - `Tests/call_models_files.py`
   - Simple runtime smoke checks for model module imports and tensor shape outputs.
@@ -264,7 +285,11 @@ Documentation and project notes.
   - Pretrained and trained model weights.
 
 - `outputs/`
-  - Generated images, perturbation configs, metric JSON files, campaign reports, CSV logs.
+  - Generated images, perturbation configs, metric JSON files, cache reports, campaign reports, and shared cache artifacts
+  - Includes `outputs/shared_eval_cache/` for:
+    - fake sample tensors
+    - real reference bundles
+    - cached metric feature arrays
 
 - `.torch_cache/`
   - Torchvision cache used for Inception weights.
@@ -278,8 +303,9 @@ Documentation and project notes.
 - `main.py`
   - Top-level controller.
   - Defines default settings.
-  - Builds compact perturbation experiment list.
+  - Builds experiment suites through `experiments.py`
   - Runs either one pipeline command or batch mode.
+  - Reuses in-process test sessions for compatible test experiments
   - Aggregates and updates report files incrementally.
 
 - `README.md`
@@ -287,9 +313,6 @@ Documentation and project notes.
 
 - `requirements.txt`
   - Python dependency list.
-
-- `inception-2015-12-05.pt`
-  - staged Inception model file (artifact).
 
 - `netG_best.pth`, `netG_epoch_30.pth`
   - generator checkpoints (artifacts).
@@ -302,27 +325,31 @@ Documentation and project notes.
 
 ### Control path
 
-- `main.py` creates command for `Tests/run_operations_pipeline.py`.
+- `main.py` builds experiment settings and test commands.
 - `Tests/run_operations_pipeline.py` maps steps to scripts in `Scripts/`.
+- In compatible test batches, `main.py` can call the test scripts directly in process through their reusable entrypoints
 
 ### Data path for test steps
 
 1. Test script loads model through:
    - `Models/dcgan.py`, `Models/wgangp.py`, or `Models/pretrained_wrappers.py`.
-2. Generates fake samples.
-3. Loads real reference data through `Datasets/unified_dataset_loader.py`.
-4. Applies perturbations through `Perturbation/pipeline_perturbations.py`.
-5. Computes metrics through `Metrics/compute_all.py`.
-6. Saves:
+2. Test script passes model-specific generation logic into `Scripts/evaluation_runtime.py`.
+3. `Scripts/evaluation_runtime.py` loads or creates cached fake samples.
+4. It loads or creates cached real reference bundles through `Datasets/unified_dataset_loader.py`.
+5. It builds reusable assignment context for class-removal and class-imbalance sweeps when needed.
+6. It applies perturbations through `Perturbation/pipeline_perturbations.py`.
+7. It reuses or extracts Inception features and computes metrics through `Metrics/compute_all.py`.
+8. Saves:
    - `generated_samples.png`
    - `perturbation_config.json`
    - `metrics_report.json`
+   - `cache_report.json`
 
 ### Batch reporting path
 
 - `main.py` batch mode records per-experiment status and outputs.
 - It writes one campaign JSON per model/dataset under `outputs/`.
-- `Tests/run_operations_pipeline.py` also logs each test step in CSV.
+- The full campaign JSON is the main persistent experiment log
 
 
 ## 5. Profiles and Step Composition
@@ -340,7 +367,14 @@ In `Tests/run_operations_pipeline.py`, profiles are fixed step lists:
 
 ## 6. Experiment Campaign Logic in `main.py`
 
-`main.py` includes a compact experiment generator for StyleGAN2-CelebA:
+`main.py` now builds suites through `experiments.py` for:
+
+- `dcgan_mnist_pretrained`
+- `dcgan_cifar10_pretrained`
+- `dcgan_pretrained_both`
+- `stylegan2_celeba`
+
+Current perturbation families include:
 
 - baseline
 - degradation sweeps
@@ -350,6 +384,20 @@ In `Tests/run_operations_pipeline.py`, profiles are fixed step lists:
 - sample size sweeps
 - preprocessing sweeps
 - domain shift sweeps
+
+For class-removal and class-imbalance label sweeps:
+
+- 1-class cases are complete
+- 3-class cases use up to 6 deterministic sampled combinations
+- 5-class cases use up to 6 deterministic sampled combinations
+- the sampled combinations use fixed seed `1`
+
+For class-removal and class-imbalance metric evaluation:
+
+- the pipeline can generate a larger fake pool
+- apply the class perturbation on that pool
+- keep a fixed fake evaluation count for metrics
+- retry with a larger fake pool if a combination is too aggressive
 
 Each experiment stores:
 
@@ -369,13 +417,14 @@ Per test run output folder contains:
 - `generated_samples.png`
 - `metrics_report.json` (if metrics enabled and successful)
 - `perturbation_config.json` (if perturbations enabled)
+- `cache_report.json`
 
 Batch report JSON contains:
 
 - list of experiments
 - command used
 - status and exit code
-- copied `metrics_report` and `perturbation_config` payloads
+- copied `metrics_report`, `perturbation_config`, and `cache_report` payloads
 - timestamps
 
 This contract is what `Notebooks/batch_results_insights.ipynb` reads for analysis.

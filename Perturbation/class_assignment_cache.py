@@ -6,6 +6,8 @@ import numpy as np
 import torch
 
 
+# this object is the reusable output of the expensive assignment step
+# i keep both the raw target view and the prediction helpers here so later code does not recompute them
 @dataclass
 class LabelAssignmentContext:
     label_mode: str
@@ -16,6 +18,7 @@ class LabelAssignmentContext:
     margin_scores: np.ndarray | None = None
 
 
+# this turns images into flat vectors for the cheap assignment rules we use in the perturbation sweep
 def feature_matrix(samples):
     return (
         samples.detach()
@@ -27,6 +30,7 @@ def feature_matrix(samples):
     )
 
 
+# this normalizes target tensors so the rest of the code can treat single label and multi label data in one place
 def prepare_reference_targets(reference_targets):
     targets_np = reference_targets.detach().cpu().numpy()
     if targets_np.ndim == 0:
@@ -36,6 +40,7 @@ def prepare_reference_targets(reference_targets):
     return targets_np
 
 
+# this makes sure i always have a usable class name list even when the dataset metadata is incomplete
 def class_names_for_label_count(
     class_names,
     label_count,
@@ -49,6 +54,7 @@ def class_names_for_label_count(
     return names
 
 
+# this is the fallback path when the dataset did not hand me names directly
 def default_class_names_from_targets(
     reference_targets,
     class_names,
@@ -63,6 +69,10 @@ def default_class_names_from_targets(
     return class_names_for_label_count(class_names=class_names, label_count=max(upper, 1))
 
 
+# this is the main cached assignment builder for class removal and class imbalance
+# i run the heavy fake to reference comparison once here and then the whole sweep can reuse it
+# for single label data i assign each fake sample to the nearest class centroid
+# for multi label data i keep margin scores for every label so threshold changes stay cheap
 def build_label_assignment_context(
     *,
     fake_samples,

@@ -5,7 +5,9 @@ import math
 import numpy as np
 
 
-# keep the fixed-count helpers here so removal and imbalance share the same rules
+
+# this error tells the runtime that the fake pool was too small for a fixed-count class experiment
+# i also store a recommended larger pool size so the retry logic can react without guessing too much
 class InsufficientClassEvaluationPoolError(RuntimeError):
     def __init__(
         self,
@@ -32,6 +34,8 @@ class InsufficientClassEvaluationPoolError(RuntimeError):
         self.recommended_pool_size = int(recommended_pool_size)
 
 
+# this is the simple path for multi label cases
+# once i have a survivor list i just draw a fixed-size subset without replacement
 def select_uniform_subset(
     indices,
     target_count: int,
@@ -56,6 +60,7 @@ def select_uniform_subset(
 
 
 # this gives us integer class counts without changing the total
+# we use it to turn soft class weights into exact per-class quotas for the final fixed subset
 def _allocate_weighted_class_quotas(
     *,
     available_counts,
@@ -127,6 +132,9 @@ def _allocate_weighted_class_quotas(
     return quotas
 
 
+# this is the single label fixed-count sampler
+# i first decide how many samples each class should contribute and then i draw those samples without replacement
+# this keeps the metric count fixed while still changing the class mix in a controlled way
 def select_single_label_weighted_subset(
     *,
     predicted_labels,

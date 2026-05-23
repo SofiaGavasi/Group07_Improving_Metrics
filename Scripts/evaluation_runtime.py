@@ -34,8 +34,9 @@ CLASS_POOL_MAX_ATTEMPTS = 4
 
 #__________________________________________________________
 
-# simple containers keep the test scripts thin
 
+# this is the common cache record shape to write into reports
+# i use the same object for fake samples real references and feature artifacts
 @dataclass
 class CacheArtifact:
     kind: str
@@ -54,12 +55,14 @@ class CacheArtifact:
         }
 
 
+# this keeps a generated tensor together with the cache metadata that produced it
 @dataclass
 class TensorArtifact:
     tensor: torch.Tensor
     cache: CacheArtifact
 
 
+# this bundles the real reference tensors and labels so later steps do not pass them around separately
 @dataclass
 class ReferenceArtifact:
     samples: torch.Tensor
@@ -68,6 +71,7 @@ class ReferenceArtifact:
     cache: CacheArtifact
 
 
+# this stores extracted features and optional inception probabilities for one source key
 @dataclass
 class FeatureArtifact:
     features: np.ndarray
@@ -75,6 +79,8 @@ class FeatureArtifact:
     cache: CacheArtifact
 
 
+# this tells the cache layer how to rebuild a derived feature set from an existing one
+#  for subset and replace cases so we can avoid a fresh inception pass
 @dataclass
 class FeatureReusePlan:
     mode: str
@@ -85,6 +91,7 @@ class FeatureReusePlan:
     positions: list[int] | None = None
 
 
+# this is the per-run output bundle that goes back to the test script and then into the batch report
 @dataclass
 class EvaluationArtifacts:
     output_dir: Path
@@ -108,9 +115,10 @@ class EvaluationArtifacts:
         }
 
 
+# this is the long-lived state for one in-process sweep
+# we keep the shared fake pool real bundle assignment context and extractor here so later experiments stay cheap
 @dataclass
 class EvaluationReuseSession:
-    # i keep the long-lived caches here so a whole sweep can reuse them in memory
     fake_artifacts: dict[str, TensorArtifact]
     reference_artifacts: dict[str, ReferenceArtifact]
     label_assignment_contexts: dict[str, Any]
@@ -126,6 +134,7 @@ class EvaluationReuseSession:
         self.extractor_holders.clear()
 
 
+# this builds an empty reusable session for one batch group
 def create_evaluation_reuse_session():
     return EvaluationReuseSession(
         fake_artifacts={},
@@ -142,10 +151,12 @@ def create_evaluation_reuse_session():
 # json and hashing stay here so every cache key is built the same way
 
 
+# this makes every cache key payload deterministic before hashing
 def _stable_json(payload):
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
+# this is the one place where we build cache keys for all artifact types
 def _hash_payload(kind, payload):
     wrapped = {
         "kind": kind,
@@ -155,19 +166,23 @@ def _hash_payload(kind, payload):
     return hashlib.sha1(_stable_json(wrapped).encode("utf-8")).hexdigest()
 
 
+# this writes small metadata json files in a consistent way
 def _write_json(path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
+# this maps one cache kind and one key to its on-disk folder
 def _cache_dir(kind, key):
     return CACHE_ROOT / kind / key
 
 
+# this resolves paths before they go into cache metadata so keys stay stable
 def _normalize_path(path_like):
     return str(Path(path_like).resolve())
 
 
+# this records enough file metadata to make cache keys react to checkpoint changes
 def file_signature(path_like) :
     path = Path(path_like).resolve()
     if not path.exists():
@@ -184,6 +199,7 @@ def file_signature(path_like) :
     }
 
 
+# this pulls class names from whichever dataset field is available
 def dataset_class_names(dataset):
     # i keep this in one place because every test script was doing the same checks
     if hasattr(dataset, "classes") and dataset.classes is not None:
@@ -201,6 +217,8 @@ def dataset_class_names(dataset):
 # shared real reference loading lives here now, so the cache can sit above every model script
 
 
+# this loads or builds the real reference bundle for metrics and label-based perturbations
+# the goal is that every compatible experiment shares the same real tensor and target cache
 def load_or_create_real_reference(
     *,
     dataset_name,
@@ -317,6 +335,8 @@ def load_or_create_real_reference(
 
 # fake generation is still model specific, but caching it is the same everywhere
 
+# this is the fake-sample cache entrypoint
+# the model script still owns the actual generation function, but this wrapper makes the artifact reusable
 def load_or_create_fake_samples(
     *,
     generation_payload,
@@ -367,6 +387,7 @@ def load_or_create_fake_samples(
     )
 
 
+# this first checks the in-memory session cache and then falls back to the on-disk fake cache
 def _session_fake_artifact(
     *,
     session,
@@ -390,6 +411,7 @@ def _session_fake_artifact(
     return artifact
 
 
+# this does the same session-aware reuse for the real reference bundle
 def _session_reference_artifact(
     *,
     session,
@@ -428,6 +450,8 @@ def _session_reference_artifact(
     return artifact
 
 
+# this builds the shared class assignment context once per fake pool and reference bundle
+# class removal and class imbalance reuse this across many experiments
 def _session_label_assignment_context(
     *,
     session,
@@ -460,6 +484,7 @@ def _session_label_assignment_context(
     return context
 
 
+# this key lets one session reuse the same inception extractor across compatible metric runs
 def _metric_holder_key(metric_config) :
     payload = {
         "feature_space": str(metric_config.feature_space),
@@ -469,6 +494,7 @@ def _metric_holder_key(metric_config) :
     return _hash_payload("metric_extractor_holder", payload)
 
 
+# this decides whether the current run should use the fixed-count class evaluation path
 def _class_fixed_eval_enabled(args) -> bool:
     return bool(
         getattr(args, "eval_metrics", False)
@@ -480,6 +506,7 @@ def _class_fixed_eval_enabled(args) -> bool:
     )
 
 
+# this resolves the target fake count used for class-removal and class-imbalance metric evaluation
 def _class_evaluation_count(args) -> int:
     requested = int(getattr(args, "perturb_class_eval_count", 0))
     if requested > 0:
@@ -490,6 +517,8 @@ def _class_evaluation_count(args) -> int:
     return max(1, int(getattr(args, "num_samples", 1)))
 
 
+# this picks the first fake pool size for class sweeps
+# i either use the explicit pool size or a multiplier on the fixed evaluation count
 def _initial_class_pool_count(args, evaluation_count: int) -> int:
     base_count = max(1, int(getattr(args, "num_samples", evaluation_count)))
     explicit = int(getattr(args, "perturb_class_pool_size", 0))
@@ -499,6 +528,7 @@ def _initial_class_pool_count(args, evaluation_count: int) -> int:
     return max(base_count, int(evaluation_count), int(np.ceil(float(evaluation_count) * multiplier)))
 
 
+# this grows the fake pool after a class experiment says the pool was too small
 def _next_class_pool_count(
     *,
     current_count: int,
@@ -511,6 +541,8 @@ def _next_class_pool_count(
     return max(target, int(np.ceil(float(current_count) * CLASS_POOL_GROWTH_FACTOR)))
 
 
+# this decides how many real samples we really need to load for a run
+# most class sweeps do not need a giant real bundle even if the fake pool is oversized
 def _reference_bundle_count(args, generated_pool_count: int) -> int:
     base_count = max(1, int(getattr(args, "num_samples", generated_pool_count)))
     metrics_count = max(1, int(getattr(args, "metrics_samples", base_count)))
@@ -522,6 +554,7 @@ def _reference_bundle_count(args, generated_pool_count: int) -> int:
 
 #__________________________________________________________
 
+# this is the stable cache key for one extracted feature artifact
 def _feature_cache_key(source_key: str, feature_space: str, needs_probs: bool) -> str:
     payload = {
         "source_key": str(source_key),
@@ -531,6 +564,7 @@ def _feature_cache_key(source_key: str, feature_space: str, needs_probs: bool) -
     return _hash_payload("metric_features", payload)
 
 
+# this wraps an in-memory-only feature artifact when i do not want to write a derived subset to disk
 def _transient_feature_artifact(
     *,
     source_key,
@@ -557,7 +591,8 @@ def _transient_feature_artifact(
     )
 
 
-def _load_feature_artifact(source_key: str, feature_space: str, needs_probs: bool) -> FeatureArtifact | None:
+# this loads cached extracted features if they already exist on disk
+def _load_feature_artifact(source_key: str, feature_space: str, needs_probs: bool) :
     key = _feature_cache_key(source_key, feature_space, needs_probs)
     cache_dir = _cache_dir("metric_features", key)
     arrays_path = cache_dir / "arrays.npz"
@@ -581,6 +616,7 @@ def _load_feature_artifact(source_key: str, feature_space: str, needs_probs: boo
     )
 
 
+# this writes extracted features to disk in the common cache layout
 def _save_feature_artifact(
     *,
     source_key,
@@ -616,6 +652,7 @@ def _save_feature_artifact(
     )
 
 
+# this is the actual inception extraction step for one tensor source
 def _extract_feature_artifact(
     *,
     source_key,
@@ -649,6 +686,8 @@ def _extract_feature_artifact(
     )
 
 
+# this is the main feature reuse resolver
+# i first try memory then disk then subset or replace plans and only extract as a last resort
 def _resolve_feature_artifact(
     *,
     source_key: str,
@@ -827,6 +866,7 @@ def _resolve_feature_artifact(
 #__________________________________________________________
 # i build source keys from stable config only
 
+# this records which fake-side perturbations change the feature source identity
 def _fake_side_signature(perturbation_info):
     if not isinstance(perturbation_info, dict) or not bool(perturbation_info.get("enabled", False)):
         return {"enabled": False}
@@ -894,6 +934,7 @@ def _fake_side_signature(perturbation_info):
     return signature
 
 
+# this does the same for real-side perturbations that can affect metric features
 def _real_side_signature(perturbation_info):
     if not isinstance(perturbation_info, dict) or not bool(perturbation_info.get("enabled", False)):
         return {"enabled": False}
@@ -925,6 +966,7 @@ def _real_side_signature(perturbation_info):
     return signature
 
 
+# this turns a baseline cache key plus a perturbation signature into a derived feature source key
 def _feature_source_key(base_key, side, signature):
     if not signature.get("enabled", False):
         return base_key
@@ -936,6 +978,7 @@ def _feature_source_key(base_key, side, signature):
     return _hash_payload("feature_source", payload)
 
 
+# this tells the cache layer when a fake-side perturbation can be rebuilt by subsetting or replacing rows
 def _build_fake_feature_plan(
     *,
     baseline_fake_key,
@@ -999,6 +1042,7 @@ def _build_fake_feature_plan(
     return None
 
 
+# this is the real-side version of the subset reuse plan builder
 def _build_real_feature_plan(
     *,
     baseline_real_key,
@@ -1020,12 +1064,15 @@ def _build_real_feature_plan(
     return None
 
 
+# this is a small helper for deciding whether the real tensor used for metrics was actually changed
 def _has_real_side_perturbation(perturbation_info):
     if not isinstance(perturbation_info, dict):
         return False
     return any(str(item).endswith(":real") for item in perturbation_info.get("applied", []))
 
 
+# this picks the real tensor that should go into metric evaluation
+# it keeps the perturbed real set when that side was intentionally changed
 def _metric_real_samples(
     *,
     base_real_samples,
@@ -1044,8 +1091,9 @@ def _metric_real_samples(
     return base_real_samples[: int(metrics_samples)].detach().cpu()
 
 
+# this is the current bootstrap policy gate
+# right now i only keep bootstrap for the baseline and sample-size runs
 def _should_bootstrap_metrics(perturbation_info):
-    # i only keep bootstrap for the clean baseline and the sample-size sweeps
     if not isinstance(perturbation_info, dict):
         return True
     if not bool(perturbation_info.get("enabled", False)):
@@ -1054,6 +1102,8 @@ def _should_bootstrap_metrics(perturbation_info):
     return bool(sample_size.get("enabled", False))
 
 
+# this is the cached metric entrypoint once fake and real tensors are already decided
+# i resolve feature artifacts here and then hand the arrays to Metrics/compute_all.py
 def evaluate_metrics_with_cache(
     *,
     real_samples,
@@ -1134,8 +1184,7 @@ def evaluate_metrics_with_cache(
 
 
 # this is the main shared flow the model scripts call now
-
-
+# it handles fake pool sizing real reference reuse perturbations feature reuse metrics and per-run reports
 def run_cached_evaluation(
     *,
     args,
