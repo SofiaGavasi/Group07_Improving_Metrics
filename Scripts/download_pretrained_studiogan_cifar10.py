@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import urllib.request
+import urllib.error
 import zipfile
 import shutil
 import tempfile
@@ -26,6 +27,29 @@ def _download_file(url, destination):
     tmp_path.replace(destination)
     print(f"Saved to: {destination}")
 
+
+def _candidate_archive_urls(source_url: str) :
+    raw = str(source_url).strip()
+    if not raw:
+        return []
+    if raw.lower().endswith(".zip"):
+        return [raw]
+
+    if raw.startswith("https://github.com/") and raw.endswith(".git"):
+        base = raw[:-4]
+        return [
+            f"{base}/archive/refs/heads/main.zip",
+            f"{base}/archive/refs/heads/master.zip",
+        ]
+
+    if raw.startswith("https://github.com/"):
+        return [
+            f"{raw}/archive/refs/heads/main.zip",
+            f"{raw}/archive/refs/heads/master.zip",
+        ]
+
+    return [raw]
+
 # helper for stage studiogan source
 def _stage_studiogan_source(source_url: str, target_dir: Path, force: bool) -> None:
     required_path = target_dir / "src" / "models" / "model.py"
@@ -45,13 +69,47 @@ def _stage_studiogan_source(source_url: str, target_dir: Path, force: bool) -> N
     with tempfile.TemporaryDirectory() as tmp_dir_str:
         tmp_dir = Path(tmp_dir_str)
         archive_path = tmp_dir / "studiogan.zip"
-        _download_file(source_url, archive_path)
+        download_errors: list[str] = []
+        archive_downloaded = False
+        for candidate_url in _candidate_archive_urls(source_url):
+            try:
+                _download_file(candidate_url, archive_path)
+                archive_downloaded = True
+                break
+            except urllib.error.URLError as exc:
+                download_errors.append(f"{candidate_url}: {exc}")
+                continue
 
-        with zipfile.ZipFile(archive_path, mode="r") as archive:
-            archive.extractall(tmp_dir)
+        if not archive_downloaded:
+            joined = "\n".join(download_errors)
+            raise RuntimeError(
+                "Could not download StudioGAN source archive from any candidate URL.\n"
+                f"{joined}"
+            )
+
+        try:
+            with zipfile.ZipFile(archive_path, mode="r") as archive:
+                archive.extractall(tmp_dir)
+        except zipfile.BadZipFile as exc:
+            raise RuntimeError(
+                "Downloaded StudioGAN source is not a zip archive. "
+                "Check the source URL or the downloaded content."
+            ) from exc
 
         extracted_roots = [p for p in tmp_dir.iterdir() if p.is_dir()]
-        source_root = extracted_roots[0]
+        source_root = None
+        for root in extracted_roots:
+            if (root / "src" / "config.py").exists() and (root / "src" / "models" / "model.py").exists():
+                source_root = root
+                break
+        if source_root is None:
+            for config_path in tmp_dir.rglob("config.py"):
+                candidate = config_path.parent
+                if (candidate / "models" / "model.py").exists():
+                    source_root = candidate.parent if candidate.name == "src" else candidate
+                    break
+        if source_root is None:
+            raise RuntimeError("Could not locate the StudioGAN source root after extraction.")
 
         shutil.move(str(source_root), str(target_dir))
         print(f"Staged studioGAN source at: {target_dir}")

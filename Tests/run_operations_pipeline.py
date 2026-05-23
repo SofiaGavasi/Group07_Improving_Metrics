@@ -70,12 +70,15 @@ def step_prep_chestxray14(args: argparse.Namespace):
 
 
 def step_stage_studiogan(args: argparse.Namespace):
-    return [
+    cmd = [
         PYTHON_EXE,
         str(SCRIPTS_DIR / "download_pretrained_studiogan_cifar10.py"),
         "--output-dir",
         str(Path(args.checkpoints_root) / "StudioGAN" / "CIFAR10"),
     ]
+    if args.force:
+        cmd.append("--force")
+    return cmd
 
 
 def step_stage_ddpm(args: argparse.Namespace):
@@ -88,12 +91,15 @@ def step_stage_ddpm(args: argparse.Namespace):
 
 
 def step_stage_stylegan(args: argparse.Namespace):
-    return [
+    cmd = [
         PYTHON_EXE,
         str(SCRIPTS_DIR / "download_pretrained_stylegan_celeba.py"),
         "--output-dir",
         str(Path(args.checkpoints_root) / "StyleGAN" / "CelebA"),
     ]
+    if args.force:
+        cmd.append("--force")
+    return cmd
 
 
 def step_train_dcgan_cifar10(args: argparse.Namespace):
@@ -252,7 +258,7 @@ def _studiogan_checkpoint_args(args):
 
 def _ddpm_checkpoint_args(args):
     checkpoint = args.ddpm_test_checkpoint or str(
-        Path(args.checkpoints_root) / "DDPM" / "CIFAR10" / "ddpm_model.pth"
+        Path(args.checkpoints_root) / "DDPM" / "CIFAR10"
     )
     return [
         "--checkpoint",
@@ -862,6 +868,11 @@ def parse_args():
         help="Comma-separated class names or indices to remove.",
     )
     parser.add_argument("--cuda", action="store_true")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Allow staging steps to replace incomplete pretrained-model folders.",
+    )
     parser.add_argument(
         "--run",
         action="store_true",

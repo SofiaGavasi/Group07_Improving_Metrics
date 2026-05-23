@@ -180,7 +180,11 @@ GENERATION_SEED = 1
 # - "dcgan_cifar10_pretrained": only CIFAR-10 checkpoint sweep
 # - "dcgan_mnist_pretrained": only MNIST checkpoint sweep
 # - "stylegan2_celeba": existing StyleGAN2/CelebA sweep
-EXPERIMENT_SUITE = "dcgan_mnist_pretrained"
+# - "wgangp_cifar10": WGAN-GP/CIFAR-10 sweep
+# - "wgangp_chestxray14": WGAN-GP/ChestXray14 sweep
+# - "ddpm_cifar10": DDPM/CIFAR-10 sweep
+# - "studiogan_cifar10": StudioGAN/CIFAR-10 sweep
+EXPERIMENT_SUITE = "studiogan_cifar10"
 
 # explicit DCGAN checkpoints 
 DCGAN_CIFAR10_PRETRAINED_NETG = "Models/saved_weights/netG_best.pth"
@@ -218,6 +222,35 @@ TEST_STEP_METADATA: dict[str, tuple[str, str, str]] = {
     "test_studiogan_cifar10": ("studiogan", "cifar10", "studiogan_cifar10_test"),
     "test_ddpm_cifar10": ("ddpm", "cifar10", "ddpm_cifar10_test"),
     "test_stylegan2_celeba": ("stylegan2", "celeba", "stylegan2_celeba_test"),
+}
+
+DATASET_SUBDIRS: dict[str, str] = {
+    "mnist": "MNIST",
+    "cifar10": "CIFAR10",
+    "celeba": "CelebA",
+    "chestxray14": "ChestXray14",
+}
+
+DATASET_DEFAULT_IMAGE_SIZES: dict[str, int] = {
+    "mnist": 32,
+    "cifar10": 32,
+    "celeba": 256,
+    "chestxray14": 32,
+}
+
+DATASET_PREP_STEPS: dict[str, str] = {
+    "mnist": "prep_mnist_cifar10",
+    "cifar10": "prep_mnist_cifar10",
+    "celeba": "prep_celeba",
+    "chestxray14": "prep_chestxray14",
+}
+
+MODEL_SETUP_STEPS: dict[str, str] = {
+    "test_wgangp_cifar10": "train_wgangp_cifar10",
+    "test_wgangp_chestxray14": "train_wgangp_chestxray14",
+    "test_ddpm_cifar10": "stage_ddpm",
+    "test_studiogan_cifar10": "stage_studiogan",
+    "test_stylegan2_celeba": "stage_stylegan",
 }
 
 
@@ -535,6 +568,252 @@ def _build_pipeline_command(pipeline_script: Path, settings: dict[str, Any]) -> 
     if settings["CONTINUE_ON_ERROR"]:
         cmd.append("--continue-on-error")
     return cmd
+
+
+def _dataset_is_ready(*, dataset_name: str, data_root: str, image_size: int):
+    from Datasets.unified_dataset_loader import make_default_loader
+
+    try:
+        loader = make_default_loader(
+            dataset_name=str(dataset_name),
+            data_root=str(data_root),
+            image_size=int(image_size),
+        )
+        dataset = loader.get_dataset(train=False, download=False)
+        return len(dataset) > 0
+    except Exception:
+        return False
+
+
+def _run_prerequisite_steps(
+    *,
+    repo_root: Path,
+    pipeline_script: Path,
+    base_settings,
+    step_names,
+    reason: str,
+) :
+    unique_steps: list[str] = []
+    for step_name in step_names:
+        if step_name not in unique_steps:
+            unique_steps.append(step_name)
+
+    if not unique_steps:
+        return
+
+    print(f"\nPreflight: {reason}", flush=True)
+    for step_name in unique_steps:
+        settings = dict(base_settings)
+        settings["CUSTOM_STEPS"] = [step_name]
+        cmd = _build_pipeline_command(pipeline_script=pipeline_script, settings=settings)
+        if step_name in {"stage_studiogan", "stage_stylegan"}:
+            cmd.append("--force")
+        print(" ".join(cmd), flush=True)
+        if not bool(settings["RUN"]):
+            continue
+        subprocess.run(cmd, cwd=str(repo_root), check=True)
+
+
+def _required_datasets_for_batch(resolved_records, base_settings) :
+    required: dict[str, dict[str, Any]] = {}
+
+    def _add_dataset(dataset_name: str, data_root = None, image_size = None):
+        normalized = str(dataset_name).strip().lower()
+        if not normalized:
+            return
+        if normalized in required:
+            return
+        required[normalized] = {
+            "dataset_name": normalized,
+            "data_root": str(
+                data_root
+                or Path(str(base_settings["DATA_ROOT"])) / DATASET_SUBDIRS.get(normalized, normalized)
+            ),
+            "image_size": int(image_size or DATASET_DEFAULT_IMAGE_SIZES.get(normalized, IMAGE_SIZE)),
+            "prep_step": DATASET_PREP_STEPS.get(normalized),
+        }
+
+    for record in resolved_records:
+        _add_dataset(str(record["dataset_name"]))
+        overrides = record["overrides"]
+        if bool(overrides.get("PERTURB_DOMAIN_SHIFT", False)):
+            _add_dataset(
+                str(overrides.get("PERTURB_DOMAIN_SHIFT_DATASET", "")),
+                str(overrides.get("PERTURB_DOMAIN_SHIFT_DATA_ROOT", "")) or None,
+                int(overrides.get("PERTURB_DOMAIN_SHIFT_IMAGE_SIZE", 0) or 0) or None,
+            )
+
+    return required
+
+
+def _ensure_datasets_ready(
+    *,
+    repo_root: Path,
+    pipeline_script: Path,
+    base_settings,
+    resolved_records,
+) :
+    required = _required_datasets_for_batch(resolved_records, base_settings)
+    missing_steps: list[str] = []
+    missing_labels: list[str] = []
+
+    for payload in required.values():
+        if _dataset_is_ready(
+            dataset_name=str(payload["dataset_name"]),
+            data_root=str(payload["data_root"]),
+            image_size=int(payload["image_size"]),
+        ):
+            continue
+        prep_step = payload.get("prep_step")
+        if prep_step is None:
+            raise FileNotFoundError(
+                f"No prep step is configured for dataset '{payload['dataset_name']}'."
+            )
+        missing_steps.append(str(prep_step))
+        missing_labels.append(str(payload["dataset_name"]))
+
+    if missing_steps:
+        _run_prerequisite_steps(
+            repo_root=repo_root,
+            pipeline_script=pipeline_script,
+            base_settings=base_settings,
+            step_names=missing_steps,
+            reason=f"loading missing datasets: {', '.join(sorted(set(missing_labels)))}",
+        )
+
+    for payload in required.values():
+        if not _dataset_is_ready(
+            dataset_name=str(payload["dataset_name"]),
+            data_root=str(payload["data_root"]),
+            image_size=int(payload["image_size"]),
+        ):
+            raise FileNotFoundError(
+                f"Dataset preflight failed for '{payload['dataset_name']}' at {payload['data_root']}."
+            )
+
+
+def _build_candidate_from_command(repo_root, step_name, cmd) :
+    module_name = _module_name_from_step_command(repo_root, cmd)
+    module = importlib.import_module(module_name)
+    parsed_args = module.parse_args(cmd[2:])
+    return {
+        "step_name": step_name,
+        "command": cmd,
+        "module_name": module_name,
+        "module": module,
+        "args": parsed_args,
+        "session_key": f"{step_name}:{_in_process_session_key(repo_root, cmd)}",
+    }
+
+
+def _checkpoint_paths_for_step(step_name: str, args) -> list[Path]:
+    paths: list[Path] = []
+    if step_name.startswith("test_dcgan"):
+        paths.append(Path(str(getattr(args, "netG", ""))))
+        return [path for path in paths if str(path)]
+    if step_name.startswith("test_wgangp"):
+        generator_path = Path(str(getattr(args, "generator_checkpoint", "")))
+        critic_path = Path(str(getattr(args, "critic_checkpoint", "")))
+        paths.append(generator_path)
+        if str(getattr(args, "critic_checkpoint", "")).strip():
+            paths.append(critic_path)
+        return [path for path in paths if str(path)]
+    if step_name.startswith(("test_studiogan", "test_ddpm", "test_stylegan2")):
+        paths.append(Path(str(getattr(args, "checkpoint", ""))))
+        return [path for path in paths if str(path)]
+    return []
+
+
+def _extra_required_paths_for_step(step_name: str, args) -> list[Path]:
+    if step_name.startswith("test_studiogan"):
+        checkpoint = Path(str(getattr(args, "checkpoint", "")))
+        repo_path_raw = str(getattr(args, "repo_path", "")).strip()
+        repo_path = Path(repo_path_raw) if repo_path_raw else checkpoint.parent / "studioGAN_src"
+        return [repo_path]
+    return []
+
+
+def _artifacts_missing_for_step(step_name: str, args) -> bool:
+    checkpoint_paths = _checkpoint_paths_for_step(step_name, args)
+    extra_paths = _extra_required_paths_for_step(step_name, args)
+    if not checkpoint_paths and not extra_paths:
+        return False
+    return any(not path.exists() for path in checkpoint_paths + extra_paths)
+
+
+def _ensure_models_ready(
+    *,
+    repo_root: Path,
+    pipeline_script: Path,
+    base_settings,
+    resolved_records,
+):
+    checked_keys: set[str] = set()
+
+    for record in resolved_records:
+        settings = record["settings"]
+        step_name = _to_str_list(settings["CUSTOM_STEPS"])[0]
+        cmd = record["command"]
+        candidate = record["candidate"] or _build_candidate_from_command(repo_root, step_name, cmd)
+        session_key = str(candidate["session_key"])
+        if session_key in checked_keys:
+            continue
+
+        setup_step = MODEL_SETUP_STEPS.get(step_name)
+        should_attempt_setup = bool(setup_step) and _artifacts_missing_for_step(step_name, candidate["args"])
+
+        for attempt in range(2):
+            probe_args = copy.deepcopy(candidate["args"])
+            setattr(probe_args, "strict", True)
+            prepared = None
+            try:
+                prepared = candidate["module"].prepare_run(probe_args)
+                if prepared is None:
+                    raise FileNotFoundError(f"prepare_run returned None for {step_name}.")
+                close_prepared_test_run(prepared)
+                checked_keys.add(session_key)
+                break
+            except Exception as exc:
+                close_prepared_test_run(prepared)
+                if attempt == 0 and should_attempt_setup and setup_step is not None:
+                    try:
+                        _run_prerequisite_steps(
+                            repo_root=repo_root,
+                            pipeline_script=pipeline_script,
+                            base_settings=base_settings,
+                            step_names=[setup_step],
+                            reason=f"loading missing model for {step_name}",
+                        )
+                        continue
+                    except subprocess.CalledProcessError as setup_exc:
+                        raise RuntimeError(
+                            f"Model preflight failed for {step_name}. "
+                            f"the checkpoint looked missing, so i tried setup step '{setup_step}', "
+                            f"but that setup step failed with exit code {setup_exc.returncode}. "
+                            f"original prepare_run error: {exc}"
+                        ) from setup_exc
+                raise RuntimeError(f"Model preflight failed for {step_name}: {exc}") from exc
+
+
+def _ensure_batch_prerequisites(
+    *,
+    repo_root: Path,
+    pipeline_script: Path,
+    base_settings,
+    resolved_records,
+):
+    _ensure_datasets_ready(
+        repo_root=repo_root,
+        pipeline_script=pipeline_script,
+        base_settings=base_settings,
+        resolved_records=resolved_records,
+    )
+    _ensure_models_ready(
+        repo_root=repo_root,
+        pipeline_script=pipeline_script,
+        base_settings=base_settings,
+        resolved_records=resolved_records,
+    )
 
 
 def _step_metadata(step_name: str) -> tuple[str, str, str]:
@@ -971,6 +1250,13 @@ def _run_batch(repo_root: Path, pipeline_script: Path, base_settings: dict[str, 
                 "candidate": candidate,
             }
         )
+
+    _ensure_batch_prerequisites(
+        repo_root=repo_root,
+        pipeline_script=pipeline_script,
+        base_settings=base_settings,
+        resolved_records=resolved_records,
+    )
 
     print(
         f"Running batch '{base_settings.get('BATCH_NAME', BATCH_NAME)}' with {len(EXPERIMENTS)} experiments.",

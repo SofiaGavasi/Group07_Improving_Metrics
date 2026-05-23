@@ -14,7 +14,6 @@ import torch.nn as nn
 
 
 class StudioGANWrapper:
-    sys.path.append("checkpoints/StudioGAN/CIFAR10/studioGAN_src/src")
     def __init__(self, repo_path, ckpt_path, config_name="SNGAN.yaml", device="cpu", logger=None):
         self.repo_path = Path(repo_path)
         self.ckpt_path = Path(ckpt_path)
@@ -28,8 +27,9 @@ class StudioGANWrapper:
 
         self.logger = logger
 
-        # path
-        src_path = self.repo_path / "src"
+        # i keep the source lookup flexible because the staged archive can unpack
+        # with slightly different top level folder shapes
+        src_path = self._resolve_studiogan_src_path(self.repo_path)
         if str(src_path) not in sys.path:
             sys.path.insert(0, str(src_path))
 
@@ -43,9 +43,9 @@ class StudioGANWrapper:
             
         self.studiogan_cfg = Configurations(str(cfg_file_path))
 
-        # it gave error otherwise
-        self.studiogan_cfg.MODEL.g_conv_dim = 96
-        self.studiogan_cfg.MODEL.d_conv_dim = 96
+        # i keep the config width from studiogan here
+        # the staged cifar10 checkpoint was trained with the normal config width
+        # and forcing 96 makes the generator too wide for the saved weights
         
         # attributes handling
         if not hasattr(self.studiogan_cfg.RUN, "mixed_precision"):
@@ -77,6 +77,28 @@ class StudioGANWrapper:
         self.G.load_state_dict(state_dict, strict=False)
         self.G.to(self.device)
         self.G.eval()
+
+    @staticmethod
+    def _resolve_studiogan_src_path(repo_path: Path):
+        candidates = [
+            repo_path / "src",
+            repo_path,
+        ]
+
+        for candidate in candidates:
+            if (candidate / "config.py").exists() and (candidate / "models" / "model.py").exists():
+                return candidate
+
+        nested_hits = list(repo_path.rglob("config.py"))
+        for config_path in nested_hits:
+            candidate = config_path.parent
+            if (candidate / "models" / "model.py").exists():
+                return candidate
+
+        raise FileNotFoundError(
+            f"Could not find StudioGAN source files under {repo_path}. "
+            "i expected a folder containing config.py and models/model.py"
+        )
 
     @torch.no_grad()
     def sample(self, n):

@@ -25,6 +25,10 @@ Current batch suites:
 - `dcgan_mnist_pretrained`
 - `dcgan_pretrained_both`
 - `stylegan2_celeba`
+- `wgangp_cifar10`
+- `wgangp_chestxray14`
+- `ddpm_cifar10`
+- `studiogan_cifar10`
 
 Each suite includes a baseline (`baseline_no_perturbation`) and the perturbation sweeps below.
 
@@ -155,5 +159,6 @@ Expected behavior and why:
 
 - MNIST/CIFAR10 (10 classes): class-removal counts map cleanly to class-count severity.
 - CelebA: the active StyleGAN2 suite uses only the kmeans target space over label co-occurrence, not the direct 40-label sweep.
+- ChestXray14: the active WGAN-GP suite uses only a kmeans target space for class-removal and class-imbalance, because the native finding-label space is multi-label and larger than the exhaustive target limit.
 - ChestXray14-specific class-removal/class-imbalance sweeps are documented conceptually but are not yet in an active dedicated suite in the current `build_experiments_for_suite(...)` routing.
 

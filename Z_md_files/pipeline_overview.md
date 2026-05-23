@@ -373,6 +373,10 @@ In `Tests/run_operations_pipeline.py`, profiles are fixed step lists:
 - `dcgan_cifar10_pretrained`
 - `dcgan_pretrained_both`
 - `stylegan2_celeba`
+- `wgangp_cifar10`
+- `wgangp_chestxray14`
+- `ddpm_cifar10`
+- `studiogan_cifar10`
 
 Current perturbation families include:
 
