@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from itertools import combinations
+import random
 from typing import Any
 
 
@@ -58,7 +59,9 @@ STYLEGAN2_STEP = "test_stylegan2_celeba"
 STYLEGAN2_MODEL = "stylegan2"
 STYLEGAN2_DATASET = "celeba"
 EXHAUSTIVE_TARGET_COMBO_LIMIT = 12 # added this limit for celeba, otherwise it would have 1 trilion combinations....
-TARGET_COMBO_SIZES = (1, 3, 5) 
+TARGET_COMBO_SIZES = (1, 3, 5)
+TARGET_COMBO_SAMPLE_LIMIT = 6
+TARGET_COMBO_SAMPLE_SEED = 1
 SINGLE_LABEL_DATASET_CLASS_COUNT = 10
 STYLEGAN2_CELEBA_LABEL_COUNT = 40
 STYLEGAN2_CELEBA_KMEANS_K = 10
@@ -71,6 +74,17 @@ def _targets_csv(indices):
 
 def _target_name_tag(targets_csv):
     return str(targets_csv).replace(",", "_")
+
+
+def _sample_target_combinations(combo_pool, combo_size):
+    # i keep all single-class cases, but the larger class sets get a fixed random sample
+    combos = list(combo_pool)
+    if int(combo_size) <= 1 or len(combos) <= int(TARGET_COMBO_SAMPLE_LIMIT):
+        return combos
+
+    rng = random.Random(int(TARGET_COMBO_SAMPLE_SEED) + int(combo_size))
+    picked = rng.sample(combos, k=int(TARGET_COMBO_SAMPLE_LIMIT))
+    return sorted(picked)
 
 
 def _selected_target_csvs(*, target_count, sweep_name, combo_sizes=TARGET_COMBO_SIZES):
@@ -96,7 +110,11 @@ def _selected_target_csvs(*, target_count, sweep_name, combo_sizes=TARGET_COMBO_
 
     target_csvs: list[str] = []
     for combo_size in selected_sizes:
-        for combo in combinations(range(total), combo_size):
+        sampled_combos = _sample_target_combinations(
+            combinations(range(total), combo_size),
+            combo_size,
+        )
+        for combo in sampled_combos:
             target_csvs.append(_targets_csv(combo))
     return target_csvs
 
