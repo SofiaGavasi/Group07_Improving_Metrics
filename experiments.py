@@ -194,161 +194,18 @@ def _build_stylegan2_experiments(
     *,
     experiment_base_overrides: dict[str, Any],
 ):
-    experiments: list[dict[str, Any]] = []
-    kmeans_target_csvs = _selected_target_csvs(
-        target_count=STYLEGAN2_CELEBA_KMEANS_K,
-        sweep_name="stylegan2 celeba kmeans perturbation sweep",
+    return _build_kmeans_only_perturbation_sweep(
+        step=STYLEGAN2_STEP,
+        model_name=STYLEGAN2_MODEL,
+        dataset_name=STYLEGAN2_DATASET,
+        kmeans_k=STYLEGAN2_CELEBA_KMEANS_K,
+        domain_shift_sweep=[
+            ("mnist", "data/MNIST", 32),
+            ("cifar10", "data/CIFAR10", 32),
+            ("chestxray14", "data/ChestXray14", 32),
+        ],
+        experiment_base_overrides=experiment_base_overrides,
     )
-
-    experiments.append(
-        _stylegan2_experiment(
-            name="baseline_no_perturbation",
-            override_updates={"USE_PERTURBATIONS": False},
-            experiment_base_overrides=experiment_base_overrides,
-        )
-    )
-
-    degrade_flags = [
-        ("noise", "PERTURB_DEGRADE_GAUSSIAN_NOISE"),
-        ("blur", "PERTURB_DEGRADE_GAUSSIAN_BLUR"),
-        ("jpeg", "PERTURB_DEGRADE_JPEG_COMPRESSION"),
-    ]
-    for degrade_name, degrade_flag in degrade_flags:
-        for severity in [1, 3, 5]:
-            experiments.append(
-                _stylegan2_experiment(
-                    name=f"degrade_{degrade_name}_sev{severity}",
-                    override_updates={
-                        "PERTURB_DEGRADE": True,
-                        "PERTURB_DEGRADE_SEVERITY": severity,
-                        degrade_flag: True,
-                    },
-                    experiment_base_overrides=experiment_base_overrides,
-                )
-            )
-    for severity in [1, 3, 5]:
-        experiments.append(
-            _stylegan2_experiment(
-                name=f"degrade_all_sev{severity}",
-                override_updates={
-                    "PERTURB_DEGRADE": True,
-                    "PERTURB_DEGRADE_SEVERITY": severity,
-                    "PERTURB_DEGRADE_GAUSSIAN_NOISE": True,
-                    "PERTURB_DEGRADE_GAUSSIAN_BLUR": True,
-                    "PERTURB_DEGRADE_JPEG_COMPRESSION": True,
-                },
-                experiment_base_overrides=experiment_base_overrides,
-            )
-        )
-
-    memo_fractions = [ 0.02, 0.05, 0.10, 0.20, 0.35, 0.50]
-    for fraction in memo_fractions:
-        experiments.append(
-            _stylegan2_experiment(
-                name=f"memo_frac_{_format_fraction_pct(fraction)}pct",
-                override_updates={
-                    "PERTURB_MEMOISATION": True,
-                    "PERTURB_MEMO_FRACTION": fraction,
-                    "PERTURB_MEMO_SEED": 10,
-                },
-                experiment_base_overrides=experiment_base_overrides,
-            )
-        )
-
-    # for celeba i only keep the clustered target space in the suite
-    # the direct 40-label sweep is too large and not part of the active run plan anymore
-    for targets_csv in kmeans_target_csvs:
-        experiments.append(
-            _stylegan2_experiment(
-                name=f"class_removal_kmeans_k10_cluster_{_target_name_tag(targets_csv)}",
-                override_updates={
-                    "PERTURB_CLASS_REMOVAL": True,
-                    "PERTURB_CLASS_REMOVAL_STRATEGY": "kmeans",
-                    "PERTURB_CLASS_REMOVAL_KMEANS_K": STYLEGAN2_CELEBA_KMEANS_K,
-                    "PERTURB_CLASS_REMOVAL_TARGETS": targets_csv,
-                    "PERTURB_CLASS_REMOVAL_SEED": 10,
-                },
-                experiment_base_overrides=experiment_base_overrides,
-            )
-        )
-
-    imbalance_levels = [0.90, 0.50, 0.2]
-    for cluster_targets in kmeans_target_csvs:
-        cluster_tag = _target_name_tag(cluster_targets)
-        for balance in imbalance_levels:
-            experiments.append(
-                _stylegan2_experiment(
-                    name=f"class_imbalance_kmeans_k10_cluster_{cluster_tag}_{_format_fraction_pct(balance)}pct",
-                    override_updates={
-                        "PERTURB_CLASS_IMBALANCE": True,
-                        "PERTURB_CLASS_IMBALANCE_STRATEGY": "kmeans",
-                        "PERTURB_CLASS_IMBALANCE_KMEANS_K": STYLEGAN2_CELEBA_KMEANS_K,
-                        "PERTURB_CLASS_IMBALANCE_TARGETS": cluster_targets,
-                        "PERTURB_CLASS_IMBALANCE_BALANCE": str(balance),
-                        "PERTURB_CLASS_IMBALANCE_SEED": 10,
-                    },
-                    experiment_base_overrides=experiment_base_overrides,
-                )
-            )
-
-    sample_size_candidates = [16, 32, 64, 128, 256, 512, 768, 1024, 1280]
-    for sample_size_n in sample_size_candidates:
-        experiments.append(
-            _stylegan2_experiment(
-                name=f"sample_size_{sample_size_n}",
-                override_updates={
-                    "PERTURB_SAMPLE_SIZE": True,
-                    "PERTURB_SAMPLE_SIZE_N": sample_size_n,
-                    "PERTURB_SAMPLE_SIZE_SEED": 10,
-                    "PERTURB_APPLY_TO": "both",
-                },
-                experiment_base_overrides=experiment_base_overrides,
-            )
-        )
-
-    preprocessing_variant_sweep = [
-        ("downsample_nearest", [0.90, 0.75, 0.60, 0.45, 0.30]),
-        ("downsample_bilinear", [0.90, 0.75, 0.60, 0.45, 0.30]),
-        ("downsample_bicubic", [0.90, 0.75, 0.60, 0.45, 0.30]),
-        ("center_crop_pad", [0.90, 0.75, 0.60, 0.45, 0.30]),
-        ("grayscale_triplicate", [0.75]),
-    ]
-    for variant, scales in preprocessing_variant_sweep:
-        for scale in scales:
-            scale_tag = str(scale).replace(".", "p")
-            experiments.append(
-                _stylegan2_experiment(
-                    name=f"preprocessing_{variant}_scale{scale_tag}",
-                    override_updates={
-                        "PERTURB_PREPROCESSING": True,
-                        "PERTURB_PREPROCESSING_VARIANT": variant,
-                        "PERTURB_PREPROCESSING_SCALE": scale,
-                    },
-                    experiment_base_overrides=experiment_base_overrides,
-                )
-            )
-
-    domain_shift_sweep = [
-        ("mnist", "data/MNIST", 32),
-        ("cifar10", "data/CIFAR10", 32),
-        ("chestxray14", "data/ChestXray14", 32),
-    ]
-    for dataset_name, data_root, image_size in domain_shift_sweep:
-        experiments.append(
-            _stylegan2_experiment(
-                name=f"domain_shift_{dataset_name}",
-                override_updates={
-                    "PERTURB_DOMAIN_SHIFT": True,
-                    "PERTURB_DOMAIN_SHIFT_DATASET": dataset_name,
-                    "PERTURB_DOMAIN_SHIFT_DATA_ROOT": data_root,
-                    "PERTURB_DOMAIN_SHIFT_IMAGE_SIZE": image_size,
-                    "METRICS_DOWNLOAD_IF_MISSING": True,
-                },
-                experiment_base_overrides=experiment_base_overrides,
-            )
-        )
-
-    return experiments
 
 
 def _single_step_experiment(
