@@ -8,7 +8,7 @@ from .prdc_utils import nearest_neighbour_radii, pairwise_distance, to_numpy_flo
 
 
 # compute precision recall
-def compute_precision_recall(real_samples: Any, fake_samples: Any, k: int = 3, **kwargs: Any):
+def compute_precision_recall(real_samples: Any, fake_samples: Any, k: int = 5, **kwargs: Any):
     """
     Compute PRDC-style precision and recall in feature space.
 
