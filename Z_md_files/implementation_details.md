@@ -274,7 +274,7 @@ Neighborhood radius computation:
 
 Function:
 
-- `compute_precision_recall(real_features, fake_features, k=3)`
+- `compute_precision_recall(real_features, fake_features, k=5)`
 
 Definitions:
 

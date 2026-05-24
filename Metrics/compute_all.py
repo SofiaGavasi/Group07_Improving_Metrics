@@ -33,7 +33,7 @@ class MetricComputationConfig:
     bootstrap_seed: int = 0
     bootstrap_alpha: float = 0.05
     bootstrap_policy: str = "full"
-    pr_k: int = 3
+    pr_k: int = 5
     dc_k: int = 5
     is_splits: int = 10
     verbose: bool = False
