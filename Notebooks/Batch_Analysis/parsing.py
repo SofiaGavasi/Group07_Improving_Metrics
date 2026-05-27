@@ -16,9 +16,9 @@ def _to_float_or_nan(value):
         return np.nan
 
 
-# helper for metric point
 def metric_point(metric_obj, subkey=None):
     obj = metric_obj
+
     if subkey is not None:
         if not isinstance(obj, dict):
             return np.nan
@@ -26,15 +26,49 @@ def metric_point(metric_obj, subkey=None):
 
     if obj is None:
         return np.nan
-    if isinstance(obj, (int, float)):
+
+    # Direct scalar, e.g. "fid": 79.43
+    if isinstance(obj, (int, float, np.integer, np.floating)):
         return float(obj)
+
+    # List/tuple format, e.g. "kid": [mean, std], "is": [mean, std]
+    if isinstance(obj, (list, tuple)):
+        return _to_float_or_nan(obj[0]) if len(obj) >= 1 else np.nan
+
+    # Dict format, e.g. {"value": ...} or {"mean": ..., "std": ..., "ci": ...}
     if isinstance(obj, dict):
-        if 'error' in obj:
+        if "error" in obj:
             return np.nan
-        if 'value' in obj:
-            return _to_float_or_nan(obj.get('value'))
-        if 'mean' in obj:
-            return _to_float_or_nan(obj.get('mean'))
+        if "value" in obj:
+            return _to_float_or_nan(obj.get("value"))
+        if "mean" in obj:
+            return _to_float_or_nan(obj.get("mean"))
+
+    return np.nan
+
+
+def metric_std(metric_obj, subkey=None):
+    obj = metric_obj
+
+    if subkey is not None:
+        if not isinstance(obj, dict):
+            return np.nan
+        obj = obj.get(subkey)
+
+    if obj is None:
+        return np.nan
+
+    # List/tuple format, e.g. "kid": [mean, std]
+    if isinstance(obj, (list, tuple)):
+        return _to_float_or_nan(obj[1]) if len(obj) >= 2 else np.nan
+
+    # Dict format, e.g. {"mean": ..., "std": ...}
+    if isinstance(obj, dict):
+        if "error" in obj:
+            return np.nan
+        if "std" in obj:
+            return _to_float_or_nan(obj.get("std"))
+
     return np.nan
 
 
@@ -170,7 +204,9 @@ def load_batch_dataframe(report_files: list) -> pd.DataFrame:
                     'domain_shift_dataset': (pert_cfg.get('domain_shift') or {}).get('dataset', ''),
                     'fid': metric_point(fid_obj),
                     'kid_mean': metric_point(kid_obj),
+                    'kid_std': metric_std(kid_obj),
                     'is_mean': metric_point(is_obj),
+                    'is_std': metric_std(is_obj),
                     'precision': metric_point(pr_obj, 'precision'),
                     'recall': metric_point(pr_obj, 'recall'),
                     'density': metric_point(dc_obj, 'density'),

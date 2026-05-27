@@ -42,7 +42,7 @@ Sweep axes:
 - corruption type: `noise`, `blur`, `jpeg`, `all`
 - severity:
 - DCGAN suites: `1, 2, 3, 4, 5`
-- StyleGAN2 suite: `1, 3, 5`
+- StyleGAN2 suite: `1,2, 3,4, 5`
 - apply target: `fake`
 
 Expected behavior and why:

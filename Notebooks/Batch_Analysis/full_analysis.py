@@ -232,14 +232,50 @@ def run_full_perturbation_analysis(df: pd.DataFrame):
     
     
     # ---- Grouped line plots (requested layout)
+    def _class_imbalance_disturbed_count(group_label: str) -> float:
+        s = str(group_label)
+        if not s.startswith('class_imbalance::'):
+            return np.nan
+        parts = s.split('::')
+        if len(parts) < 3:
+            return np.nan
+        targets = [t for t in parts[-1].split(',') if t]
+        return float(len(targets)) if targets else np.nan
+
+
+    class_imbalance_groups = [g for g in pert_groups if g.startswith('class_imbalance::')]
+    class_imbalance_counts = sorted(
+        {
+            int(cnt)
+            for cnt in (_class_imbalance_disturbed_count(g) for g in class_imbalance_groups)
+            if pd.notna(cnt)
+        }
+    )
+
     PLOT_GROUPS = {
         'Degradation': [g for g in pert_groups if g.startswith('degradation_')],
         'Class Removal': [g for g in pert_groups if g.startswith('class_removal')],
-        'Class Imbalance': [g for g in pert_groups if g.startswith('class_imbalance::')],
+    }
+
+    for disturbed_count in class_imbalance_counts:
+        label = 'class' if disturbed_count == 1 else 'classes'
+        PLOT_GROUPS[f'Class Imbalance ({disturbed_count} disturbed {label})'] = [
+            g for g in class_imbalance_groups
+            if _class_imbalance_disturbed_count(g) == disturbed_count
+        ]
+
+    class_imbalance_unknown = [
+        g for g in class_imbalance_groups
+        if pd.isna(_class_imbalance_disturbed_count(g))
+    ]
+    if class_imbalance_unknown:
+        PLOT_GROUPS['Class Imbalance (unknown disturbed classes)'] = class_imbalance_unknown
+
+    PLOT_GROUPS.update({
         'Memoisation': [g for g in pert_groups if g == 'memoisation'],
         'Sample Size': [g for g in pert_groups if g == 'sample_size'],
         'Preprocessing': [g for g in pert_groups if g.startswith('preprocessing::')],
-    }
+    })
     
     
     # helper for unique legend entries
@@ -463,6 +499,10 @@ def run_full_perturbation_analysis(df: pd.DataFrame):
                     'span_norm': span,
                 })
     robustness = pd.DataFrame(rob_rows)
+    # Drop robustness rows where statistics cannot be computed.
+    # n_points = 1 means std/cv/span are undefined, so they become NaN.
+    if not robustness.empty:
+        robustness = robustness[robustness["n_points"] >= 2].copy()
     
     # ---- 4) Specificity: off-target drift should stay low
     PRIMARY_MAP = {
