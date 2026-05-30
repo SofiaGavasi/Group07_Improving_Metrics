@@ -465,17 +465,31 @@ def run_full_perturbation_analysis(df: pd.DataFrame):
     robustness = pd.DataFrame(rob_rows)
     
     # ---- 4) Specificity: off-target drift should stay low
+    # PRIMARY_MAP = {
+    #     'degradation_noise': {'fid', 'kid_mean'},
+    #     'degradation_blur': {'fid', 'kid_mean'},
+    #     'degradation_jpeg': {'fid', 'kid_mean'},
+    #     'degradation_all': {'fid', 'kid_mean'},
+    #     'memoisation': {'fid', 'kid_mean', 'precision', 'density'},
+    #     'class_removal': {'recall', 'coverage'},
+    #     'class_imbalance': {'recall', 'coverage'},
+    #     'sample_size': set(),
+    #     'preprocessing': set(),
+    # }
+    
+    # this is the new primary map 
     PRIMARY_MAP = {
-        'degradation_noise': {'fid', 'kid_mean'},
-        'degradation_blur': {'fid', 'kid_mean'},
-        'degradation_jpeg': {'fid', 'kid_mean'},
-        'degradation_all': {'fid', 'kid_mean'},
-        'memoisation': {'fid', 'kid_mean', 'precision', 'density'},
-        'class_removal': {'recall', 'coverage'},
-        'class_imbalance': {'recall', 'coverage'},
-        'sample_size': set(),
-        'preprocessing': set(),
+        'degradation_noise': {'fid', 'kid_mean','is_mean','precision','density'},
+        'degradation_blur': {'fid', 'kid_mean','is_mean','precision','density'},
+        'degradation_jpeg': {'fid', 'kid_mean','is_mean','precision','density'},
+        'degradation_all': {'fid', 'kid_mean','is_mean','precision','density'},
+        'memoisation': {'fid', 'kid_mean', 'precision', 'density','recall','coverage'},
+        'class_removal': {'fid','kid_mean','recall', 'coverage'},
+        'class_imbalance': {'fid','kid_mean','recall', 'coverage'},
+        'sample_size': {'fid','kid_mean','is_mean','precision','recall','density','coverage'},
+        'preprocessing': {'fid','kid_mean'},
     }
+
     
     # helper for base family
     def _base_family(group_label: str) -> str:
@@ -537,7 +551,7 @@ def run_full_perturbation_analysis(df: pd.DataFrame):
     mono_piv = monotonicity.pivot(index='perturbation_group', columns='metric', values='rho_spearman').reindex(columns=METRICS)
     fig_m, ax_m = plt.subplots(figsize=(12, max(3, 0.34 * len(mono_piv) + 2)))
     im = ax_m.imshow(mono_piv.fillna(0).to_numpy(), aspect='auto', cmap='coolwarm', vmin=-1, vmax=1)
-    ax_m.set_title('Monotonicity: Spearman rho (scale vs normalized metric)')
+    ax_m.set_title(r'Monotonic Association: Spearman $\rho$ (scale vs normalized metric)')
     ax_m.set_xticks(np.arange(len(METRICS)))
     ax_m.set_xticklabels([METRIC_LABELS[m] for m in METRICS], rotation=30, ha='right')
     ax_m.set_yticks(np.arange(len(mono_piv.index)))
