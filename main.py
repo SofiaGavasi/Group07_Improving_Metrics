@@ -184,7 +184,7 @@ GENERATION_SEED = 1
 # - "wgangp_chestxray14": WGAN-GP/ChestXray14 sweep
 # - "ddpm_cifar10": DDPM/CIFAR-10 sweep
 # - "studiogan_cifar10": StudioGAN/CIFAR-10 sweep
-EXPERIMENT_SUITE = "dcgan_cifar10_pretrained"
+EXPERIMENT_SUITE = "ddpm_cifar10"
 
 # explicit DCGAN checkpoints 
 DCGAN_CIFAR10_PRETRAINED_NETG = "Models/saved_weights/netG_best.pth"
