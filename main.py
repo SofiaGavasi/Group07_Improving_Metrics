@@ -1196,16 +1196,12 @@ def _effective_bootstrap_samples(
     requested_samples: int,
     seen_buckets: set[tuple[Any, ...]],
 ) -> tuple[int, str]:
-    # i only keep bootstrap on the baseline and sample-size runs.
     requested = int(requested_samples)
+
     if requested <= 0:
         return 0, "disabled"
 
-    bucket = _bootstrap_bucket(name=name, overrides=overrides)
-    if bucket is None:
-        return 0, "baseline_and_sample_size_only"
-    seen_buckets.add(bucket)
-    return requested, "baseline_and_sample_size_only"
+    return requested, "all_experiments"
 
 
 def _run_single(repo_root: Path, pipeline_script: Path, settings: dict[str, Any]) -> None:
