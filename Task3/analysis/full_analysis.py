@@ -62,7 +62,7 @@ def _line_axis_label(axis_mode, sample_size_reference):
     if axis_mode == "sample_size":
         return f"Sample Size / N (N={int(sample_size_reference)})"
     if axis_mode == "preprocessing":
-        return "Inverted Severity (1 - scale)"
+        return "Severity (1 - scale)"
     return "Scale / Severity"
 
 
@@ -70,6 +70,31 @@ def _format_axis_tick(value):
     if not np.isfinite(value):
         return ""
     return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+def _apply_line_axis_ticks(ax, axis_mode, tick_values):
+    tick_values_sorted = sorted(value for value in tick_values if np.isfinite(value))
+    if not tick_values_sorted:
+        return
+
+    if axis_mode == "sample_size":
+        ax.set_xscale("log")
+        ax.set_xlim(tick_values_sorted[0] * 0.9, tick_values_sorted[-1] * 1.05)
+        rotation = 35
+        alignment = "right"
+        tick_fontsize = 6.5
+    else:
+        rotation = 0
+        alignment = "center"
+        tick_fontsize = 7
+
+    ax.set_xticks(tick_values_sorted)
+    ax.set_xticklabels(
+        [_format_axis_tick(value) for value in tick_values_sorted],
+        rotation=rotation,
+        ha=alignment,
+        fontsize=tick_fontsize,
+    )
 
 
 def _build_plot_groups(perturbation_groups):
@@ -211,9 +236,7 @@ def _plot_group_metric_panels(curve_df, group_name, group_labels):
         ax.set_xlabel(_line_axis_label(axis_mode, sample_size_reference), fontsize=8)
         ax.set_ylabel("Metric value", fontsize=8)
         if tick_values and axis_mode in {"sample_size", "preprocessing"}:
-            tick_values_sorted = sorted(tick_values)
-            ax.set_xticks(tick_values_sorted)
-            ax.set_xticklabels([_format_axis_tick(value) for value in tick_values_sorted], fontsize=7)
+            _apply_line_axis_ticks(ax, axis_mode, tick_values)
         ax.tick_params(labelsize=8)
 
     for index in range(len(METRICS), len(axes_flat)):
@@ -224,7 +247,7 @@ def _plot_group_metric_panels(curve_df, group_name, group_labels):
         fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 1.03), ncol=3, fontsize=8)
 
     fig.suptitle(f"{group_name}: metric response by perturbation type", fontsize=13)
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.tight_layout(rect=[0, 0.03, 1, 0.96])
     plt.show()
 
 
@@ -290,9 +313,7 @@ def _plot_group_average_metric_panels(curve_df, group_name, group_labels):
                 )
 
             if axis_mode in {"sample_size", "preprocessing"}:
-                tick_values = sorted(set(x_values[valid]))
-                ax.set_xticks(tick_values)
-                ax.set_xticklabels([_format_axis_tick(value) for value in tick_values], fontsize=7)
+                _apply_line_axis_ticks(ax, axis_mode, set(x_values[valid]))
 
         panel_base = plot_df[f"{metric}_baseline"].mean()
         if np.isfinite(panel_base):
@@ -319,7 +340,7 @@ def _plot_group_average_metric_panels(curve_df, group_name, group_labels):
         fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 1.03), ncol=3, fontsize=8)
 
     fig.suptitle(f"{group_name}: averaged metric response across target sets", fontsize=13)
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.tight_layout(rect=[0, 0.03, 1, 0.96])
     plt.show()
 
 
@@ -762,7 +783,7 @@ def run_full_perturbation_analysis(df, show_plots=True, show_tables=True, verbos
         _plot_value_heatmap(
             monotonicity,
             value_column="rho_spearman",
-            title="Monotonicity: Spearman rho (scale vs normalized metric)",
+            title="Monotonic Assos: Spearman rho (scale vs normalized metric)",
             cmap="coolwarm",
             colorbar_label="rho",
             vmin=-1,
