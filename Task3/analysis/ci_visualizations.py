@@ -1,6 +1,11 @@
+"""
+this file plots experiment level confidence intervals from the parsed batch table
+
+it keeps the notebook helper that groups experiments picks a useful x axis and draws one panel per metric with baseline references
+"""
+
 import math
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -33,10 +38,16 @@ LABEL_AXIS_CANDIDATES = [
 ]
 
 
+def _get_plt():
+    import matplotlib.pyplot as plt
+    return plt
+
+
 def _baseline_mask(df):
     family_mask = pd.Series(False, index=df.index)
     if "perturbation_family" in df.columns:
         family_mask = df["perturbation_family"].astype(str).str.lower().eq("baseline")
+
     name_mask = df["name"].astype(str).str.contains("baseline", case=False, na=False)
     return family_mask | name_mask
 
@@ -44,6 +55,7 @@ def _baseline_mask(df):
 def _clean_text(value):
     if pd.isna(value):
         return "unknown"
+
     text = str(value).strip()
     return text or "unknown"
 
@@ -59,35 +71,39 @@ def _format_numeric_tick(value):
 def _available_metric_specs(df, metrics=None):
     allowed = set(metrics) if metrics is not None else None
     specs = []
+
     for metric_key, low_key, high_key, label in METRIC_SPECS:
         if allowed is not None and metric_key not in allowed:
             continue
-        if all(col in df.columns for col in [metric_key, low_key, high_key]):
+        if all(column in df.columns for column in [metric_key, low_key, high_key]):
             specs.append((metric_key, low_key, high_key, label))
+
     return specs
 
 
 def _build_group_title(group_key, group_cols):
     parts = []
-    for col, value in zip(group_cols, group_key):
-        parts.append(f"{GROUP_LABELS.get(col, col)}: {_clean_text(value)}")
+    for column, value in zip(group_cols, group_key):
+        parts.append(f"{GROUP_LABELS.get(column, column)}: {_clean_text(value)}")
     return " | ".join(parts)
 
 
 def _pick_axis(group_df):
-    for col, label in NUMERIC_AXIS_CANDIDATES:
-        if col not in group_df.columns:
+    for column, label in NUMERIC_AXIS_CANDIDATES:
+        if column not in group_df.columns:
             continue
-        values = pd.to_numeric(group_df[col], errors="coerce")
-        if values.notna().all():
-            return col, label, values
 
-    for col, label in LABEL_AXIS_CANDIDATES:
-        if col not in group_df.columns:
+        values = pd.to_numeric(group_df[column], errors="coerce")
+        if values.notna().all():
+            return column, label, values
+
+    for column, label in LABEL_AXIS_CANDIDATES:
+        if column not in group_df.columns:
             continue
-        labels = group_df[col].map(_clean_text)
+
+        labels = group_df[column].map(_clean_text)
         if (labels != "unknown").all() and labels.is_unique:
-            return col, label, labels
+            return column, label, labels
 
     return "name", "Experiment", group_df["name"].map(_clean_text)
 
@@ -95,18 +111,18 @@ def _pick_axis(group_df):
 def _chunk_frame(frame, chunk_size):
     if len(frame) <= chunk_size:
         return [frame]
-    return [frame.iloc[start : start + chunk_size].copy() for start in range(0, len(frame), chunk_size)]
+
+    chunks = []
+    for start in range(0, len(frame), chunk_size):
+        chunks.append(frame.iloc[start : start + chunk_size].copy())
+    return chunks
 
 
-def _build_lookup_key(row, cols):
-    return tuple(row[col] for col in cols)
+def _build_lookup_key(row, columns):
+    return tuple(row[column] for column in columns)
 
 
-def _build_baseline_reference_map(
-    df,
-    metric_specs,
-    lookup_cols,
-):
+def _build_baseline_reference_map(df, metric_specs, lookup_cols):
     if df.empty:
         return {}
 
@@ -129,29 +145,26 @@ def _build_baseline_reference_map(
     return {(): baseline_row}
 
 
-def _unique_legend_entries(ax_list):
+def _unique_legend_entries(axes):
     seen = set()
-    out_handles = []
-    out_labels = []
-    for ax in ax_list:
+    handles_out = []
+    labels_out = []
+
+    for ax in axes:
         handles, labels = ax.get_legend_handles_labels()
         for handle, label in zip(handles, labels):
             if not label or label in seen:
                 continue
             seen.add(label)
-            out_handles.append(handle)
-            out_labels.append(label)
-    return out_handles, out_labels
+            handles_out.append(handle)
+            labels_out.append(label)
+
+    return handles_out, labels_out
 
 
-def _plot_chunk(
-    group_df,
-    metric_specs,
-    group_title,
-    baseline_row,
-    chunk_index,
-    chunk_count,
-):
+def _plot_chunk(group_df, metric_specs, group_title, baseline_row, chunk_index, chunk_count):
+    plt = _get_plt()
+
     axis_col, axis_label, axis_values = _pick_axis(group_df)
     plot_df = group_df.copy()
     plot_df["_axis_value"] = axis_values
@@ -165,8 +178,8 @@ def _plot_chunk(
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(17, 4.2 * n_rows), squeeze=False)
     axes_flat = axes.ravel()
 
-    for idx, (metric_key, low_key, high_key, metric_label) in enumerate(metric_specs):
-        ax = axes_flat[idx]
+    for index, (metric_key, low_key, high_key, metric_label) in enumerate(metric_specs):
+        ax = axes_flat[index]
         metric_df = plot_df.dropna(subset=[metric_key, low_key, high_key]).copy()
 
         if metric_df.empty:
@@ -178,20 +191,22 @@ def _plot_chunk(
         values = metric_df[metric_key].to_numpy(dtype=float)
         lows = metric_df[low_key].to_numpy(dtype=float)
         highs = metric_df[high_key].to_numpy(dtype=float)
-        lower_err = np.maximum(0.0, values - lows)
-        upper_err = np.maximum(0.0, highs - values)
+        lower_error = np.maximum(0.0, values - lows)
+        upper_error = np.maximum(0.0, highs - values)
 
         if is_numeric_axis:
-            x = pd.to_numeric(metric_df["_axis_value"], errors="coerce").to_numpy(dtype=float)
-            order = np.argsort(x)
-            x = x[order]
+            x_values = pd.to_numeric(metric_df["_axis_value"], errors="coerce").to_numpy(dtype=float)
+            order = np.argsort(x_values)
+
+            x_values = x_values[order]
             values = values[order]
-            lower_err = lower_err[order]
-            upper_err = upper_err[order]
+            lower_error = lower_error[order]
+            upper_error = upper_error[order]
+
             ax.errorbar(
-                x,
+                x_values,
                 values,
-                yerr=np.vstack([lower_err, upper_err]),
+                yerr=np.vstack([lower_error, upper_error]),
                 fmt="-o",
                 color="tab:blue",
                 ecolor="black",
@@ -201,15 +216,16 @@ def _plot_chunk(
                 markersize=4,
                 label="Experiment values",
             )
-            ax.set_xticks(x)
-            ax.set_xticklabels([_format_numeric_tick(v) for v in x], fontsize=8)
+            ax.set_xticks(x_values)
+            ax.set_xticklabels([_format_numeric_tick(value) for value in x_values], fontsize=8)
         else:
             labels = metric_df["_axis_value"].astype(str).tolist()
-            x = np.arange(len(labels), dtype=float)
+            x_values = np.arange(len(labels), dtype=float)
+
             ax.errorbar(
-                x,
+                x_values,
                 values,
-                yerr=np.vstack([lower_err, upper_err]),
+                yerr=np.vstack([lower_error, upper_error]),
                 fmt="o",
                 color="tab:blue",
                 ecolor="black",
@@ -218,7 +234,7 @@ def _plot_chunk(
                 markersize=4,
                 label="Experiment values",
             )
-            ax.set_xticks(x)
+            ax.set_xticks(x_values)
             ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=8)
 
         if baseline_row is not None:
@@ -260,12 +276,19 @@ def _plot_chunk(
         ax.grid(alpha=0.2)
         ax.tick_params(labelsize=8)
 
-    for idx in range(len(metric_specs), len(axes_flat)):
-        axes_flat[idx].axis("off")
+    for index in range(len(metric_specs), len(axes_flat)):
+        axes_flat[index].axis("off")
 
     handles, labels = _unique_legend_entries(axes_flat)
     if handles:
-        fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 0.965), ncol=min(4, len(labels)), fontsize=8)
+        fig.legend(
+            handles,
+            labels,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 0.965),
+            ncol=min(4, len(labels)),
+            fontsize=8,
+        )
 
     suffix = f" (part {chunk_index} of {chunk_count})" if chunk_count > 1 else ""
     fig.suptitle(f"Experiment confidence intervals: {group_title}{suffix}", fontsize=13)
@@ -284,7 +307,7 @@ def plot_experiment_confidence_intervals(
     if max_experiments_per_figure < 1:
         raise ValueError("`max_experiments_per_figure` must be at least 1.")
 
-    missing_group_cols = [col for col in group_cols if col not in df.columns]
+    missing_group_cols = [column for column in group_cols if column not in df.columns]
     if missing_group_cols:
         raise RuntimeError(f"Dataframe missing required grouping columns: {missing_group_cols}")
     if "name" not in df.columns:
@@ -296,8 +319,9 @@ def plot_experiment_confidence_intervals(
 
     dedupe_cols = list(group_cols) + ["name"]
     plot_df = df.drop_duplicates(subset=dedupe_cols, keep="last").copy()
+
     baseline_mask = _baseline_mask(plot_df)
-    baseline_lookup_cols = tuple(col for col in group_cols if col != "perturbation_family")
+    baseline_lookup_cols = tuple(column for column in group_cols if column != "perturbation_family")
     baseline_map = _build_baseline_reference_map(
         plot_df[baseline_mask].copy(),
         metric_specs=metric_specs,
@@ -320,6 +344,7 @@ def plot_experiment_confidence_intervals(
 
         group_title = _build_group_title(group_key, group_cols)
         axis_col, _, axis_values = _pick_axis(group_df)
+
         sorted_group_df = group_df.copy()
         sorted_group_df["_axis_value_for_chunking"] = axis_values
         is_numeric_axis = pd.api.types.is_numeric_dtype(sorted_group_df["_axis_value_for_chunking"])
@@ -336,6 +361,7 @@ def plot_experiment_confidence_intervals(
 
         baseline_key = _build_lookup_key(group_df.iloc[0], baseline_lookup_cols) if baseline_lookup_cols else ()
         baseline_row = baseline_map.get(baseline_key)
+
         for chunk_index, chunk_df in enumerate(chunked_frames, start=1):
             _plot_chunk(
                 chunk_df,
@@ -345,6 +371,7 @@ def plot_experiment_confidence_intervals(
                 chunk_index=chunk_index,
                 chunk_count=len(chunked_frames),
             )
+
         plotted_group_count += 1
 
     print(
