@@ -1,7 +1,7 @@
 """
 this file plots experiment level confidence intervals from the parsed batch table
 
-it keeps the notebook helper that groups experiments picks a useful x axis and draws one panel per metric with baseline references
+
 """
 
 import math
@@ -26,13 +26,6 @@ GROUP_LABELS = {
     "perturbation_family": "Family",
 }
 
-NUMERIC_AXIS_CANDIDATES = [
-    ("sample_size_n", "Sample size"),
-    ("degradation_severity", "Degradation severity"),
-    ("preprocessing_scale", "Preprocessing scale"),
-    ("severity_from_name", "Severity"),
-]
-
 LABEL_AXIS_CANDIDATES = [
     ("domain_shift_dataset", "Target dataset"),
 ]
@@ -43,11 +36,71 @@ def _get_plt():
     return plt
 
 
+# ── axis mode helpers (identical logic to full_analysis.py) ──────────────────
+
+def _axis_mode(perturbation_groups):
+    labels = [str(g) for g in perturbation_groups if pd.notna(g)]
+    if labels and all(g == "sample_size" for g in labels):
+        return "sample_size"
+    if labels and all(g.startswith("preprocessing::") for g in labels):
+        return "preprocessing"
+    return "default"
+
+
+def _sample_size_reference(scale_series):
+    values = pd.to_numeric(scale_series, errors="coerce")
+    max_val = values.max()
+    return float(max_val) if pd.notna(max_val) and float(max_val) > 0 else 1280.0
+
+
+def _transform_scales(scale_series, mode, sample_size_ref):
+    values = pd.to_numeric(scale_series, errors="coerce").to_numpy(dtype=float)
+    if mode == "sample_size":
+        return values / float(sample_size_ref)
+    if mode == "preprocessing":
+        return 1.0 - values
+    return values
+
+
+def _axis_label(mode, sample_size_ref):
+    if mode == "sample_size":
+        return f"Sample Size / N (N={int(sample_size_ref)})"
+    if mode == "preprocessing":
+        return "Severity (1 - scale)"
+    return "Scale / Severity"
+
+
+def _format_tick(value):
+    if not np.isfinite(value):
+        return ""
+    return f"{value:.4f}".rstrip("0").rstrip(".")
+
+
+def _apply_axis_ticks(ax, mode, tick_values):
+    tick_values_sorted = sorted(v for v in tick_values if np.isfinite(v))
+    if not tick_values_sorted:
+        return
+    if mode == "sample_size":
+        ax.set_xscale("log")
+        ax.set_xlim(tick_values_sorted[0] * 0.9, tick_values_sorted[-1] * 1.05)
+        rotation, alignment, fontsize = 35, "right", 6.5
+    else:
+        rotation, alignment, fontsize = 0, "center", 7
+    ax.set_xticks(tick_values_sorted)
+    ax.set_xticklabels(
+        [_format_tick(v) for v in tick_values_sorted],
+        rotation=rotation,
+        ha=alignment,
+        fontsize=fontsize,
+    )
+
+
+# ── internal helpers ──────────────────────────────────────────────────────────
+
 def _baseline_mask(df):
     family_mask = pd.Series(False, index=df.index)
     if "perturbation_family" in df.columns:
         family_mask = df["perturbation_family"].astype(str).str.lower().eq("baseline")
-
     name_mask = df["name"].astype(str).str.contains("baseline", case=False, na=False)
     return family_mask | name_mask
 
@@ -55,81 +108,41 @@ def _baseline_mask(df):
 def _clean_text(value):
     if pd.isna(value):
         return "unknown"
-
-    text = str(value).strip()
-    return text or "unknown"
-
-
-def _format_numeric_tick(value):
-    if not np.isfinite(value):
-        return "NA"
-    if float(value).is_integer():
-        return str(int(value))
-    return f"{value:.3g}"
+    return str(value).strip() or "unknown"
 
 
 def _available_metric_specs(df, metrics=None):
     allowed = set(metrics) if metrics is not None else None
-    specs = []
-
-    for metric_key, low_key, high_key, label in METRIC_SPECS:
-        if allowed is not None and metric_key not in allowed:
-            continue
-        if all(column in df.columns for column in [metric_key, low_key, high_key]):
-            specs.append((metric_key, low_key, high_key, label))
-
-    return specs
+    return [
+        (mk, lk, hk, label)
+        for mk, lk, hk, label in METRIC_SPECS
+        if (allowed is None or mk in allowed)
+        and all(c in df.columns for c in [mk, lk, hk])
+    ]
 
 
 def _build_group_title(group_key, group_cols):
-    parts = []
-    for column, value in zip(group_cols, group_key):
-        parts.append(f"{GROUP_LABELS.get(column, column)}: {_clean_text(value)}")
+    parts = [
+        f"{GROUP_LABELS.get(col, col)}: {_clean_text(val)}"
+        for col, val in zip(group_cols, group_key)
+    ]
     return " | ".join(parts)
-
-
-def _pick_axis(group_df):
-    for column, label in NUMERIC_AXIS_CANDIDATES:
-        if column not in group_df.columns:
-            continue
-
-        values = pd.to_numeric(group_df[column], errors="coerce")
-        if values.notna().all():
-            return column, label, values
-
-    for column, label in LABEL_AXIS_CANDIDATES:
-        if column not in group_df.columns:
-            continue
-
-        labels = group_df[column].map(_clean_text)
-        if (labels != "unknown").all() and labels.is_unique:
-            return column, label, labels
-
-    return "name", "Experiment", group_df["name"].map(_clean_text)
 
 
 def _chunk_frame(frame, chunk_size):
     if len(frame) <= chunk_size:
         return [frame]
-
-    chunks = []
-    for start in range(0, len(frame), chunk_size):
-        chunks.append(frame.iloc[start : start + chunk_size].copy())
-    return chunks
+    return [frame.iloc[i: i + chunk_size].copy() for i in range(0, len(frame), chunk_size)]
 
 
 def _build_lookup_key(row, columns):
-    return tuple(row[column] for column in columns)
+    return tuple(row[col] for col in columns)
 
 
 def _build_baseline_reference_map(df, metric_specs, lookup_cols):
     if df.empty:
         return {}
-
-    value_cols = []
-    for metric_key, low_key, high_key, _ in metric_specs:
-        value_cols.extend([metric_key, low_key, high_key])
-
+    value_cols = [col for spec in metric_specs for col in spec[:3]]
     if lookup_cols:
         baseline_df = (
             df.groupby(list(lookup_cols), dropna=False)[value_cols]
@@ -140,43 +153,55 @@ def _build_baseline_reference_map(df, metric_specs, lookup_cols):
             _build_lookup_key(row, lookup_cols): row
             for _, row in baseline_df.iterrows()
         }
-
-    baseline_row = df[value_cols].mean(numeric_only=True)
-    return {(): baseline_row}
+    return {(): df[value_cols].mean(numeric_only=True)}
 
 
 def _unique_legend_entries(axes):
     seen = set()
-    handles_out = []
-    labels_out = []
-
+    handles_out, labels_out = [], []
     for ax in axes:
-        handles, labels = ax.get_legend_handles_labels()
-        for handle, label in zip(handles, labels):
-            if not label or label in seen:
-                continue
-            seen.add(label)
-            handles_out.append(handle)
-            labels_out.append(label)
-
+        for handle, label in zip(*ax.get_legend_handles_labels()):
+            if label and label not in seen:
+                seen.add(label)
+                handles_out.append(handle)
+                labels_out.append(label)
     return handles_out, labels_out
 
 
-def _plot_chunk(group_df, metric_specs, group_title, baseline_row, chunk_index, chunk_count):
+# ── per-chunk plot ────────────────────────────────────────────────────────────
+
+def _plot_chunk(group_df, metric_specs, group_title, baseline_row,
+                chunk_index, chunk_count, mode, sample_size_ref):
     plt = _get_plt()
 
-    axis_col, axis_label, axis_values = _pick_axis(group_df)
     plot_df = group_df.copy()
-    plot_df["_axis_value"] = axis_values
 
-    is_numeric_axis = pd.api.types.is_numeric_dtype(plot_df["_axis_value"])
-    sort_cols = ["_axis_value", "name"] if is_numeric_axis else ["_axis_value"]
-    plot_df = plot_df.sort_values(sort_cols, kind="stable")
+    if "scale" in plot_df.columns:
+        plot_df["_x"] = _transform_scales(plot_df["scale"], mode, sample_size_ref)
+    else:
+        plot_df["_x"] = np.arange(len(plot_df), dtype=float)
+
+    # domain shift has no numeric scale — fall back to label axis
+    use_label_axis = False
+    if mode == "default":
+        for col, _ in LABEL_AXIS_CANDIDATES:
+            if col in plot_df.columns:
+                labels_series = plot_df[col].map(_clean_text)
+                if (labels_series != "unknown").all():
+                    plot_df["_x_label"] = labels_series
+                    use_label_axis = True
+                    break
+
+    is_numeric = not use_label_axis
+    sort_col = "_x" if is_numeric else ("_x_label" if "_x_label" in plot_df.columns else "name")
+    plot_df = plot_df.sort_values([sort_col, "name"], kind="stable")
 
     n_cols = 3
     n_rows = int(math.ceil(len(metric_specs) / n_cols))
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(17, 4.2 * n_rows), squeeze=False)
     axes_flat = axes.ravel()
+
+    x_label_str = _axis_label(mode, sample_size_ref)
 
     for index, (metric_key, low_key, high_key, metric_label) in enumerate(metric_specs):
         ax = axes_flat[index]
@@ -191,87 +216,59 @@ def _plot_chunk(group_df, metric_specs, group_title, baseline_row, chunk_index, 
         values = metric_df[metric_key].to_numpy(dtype=float)
         lows = metric_df[low_key].to_numpy(dtype=float)
         highs = metric_df[high_key].to_numpy(dtype=float)
-        lower_error = np.maximum(0.0, values - lows)
-        upper_error = np.maximum(0.0, highs - values)
+        lower_err = np.maximum(0.0, values - lows)
+        upper_err = np.maximum(0.0, highs - values)
 
-        if is_numeric_axis:
-            x_values = pd.to_numeric(metric_df["_axis_value"], errors="coerce").to_numpy(dtype=float)
-            order = np.argsort(x_values)
-
-            x_values = x_values[order]
-            values = values[order]
-            lower_error = lower_error[order]
-            upper_error = upper_error[order]
+        if is_numeric:
+            x_vals = pd.to_numeric(metric_df["_x"], errors="coerce").to_numpy(dtype=float)
+            order = np.argsort(x_vals)
+            x_vals, values = x_vals[order], values[order]
+            lower_err, upper_err = lower_err[order], upper_err[order]
 
             ax.errorbar(
-                x_values,
-                values,
-                yerr=np.vstack([lower_error, upper_error]),
+                x_vals, values,
+                yerr=np.vstack([lower_err, upper_err]),
                 fmt="-o",
-                color="tab:blue",
-                ecolor="black",
-                linewidth=1.4,
-                elinewidth=1.0,
-                capsize=3,
-                markersize=4,
+                color="tab:blue", ecolor="black",
+                linewidth=1.4, elinewidth=1.0,
+                capsize=3, markersize=4,
                 label="Experiment values",
             )
-            ax.set_xticks(x_values)
-            ax.set_xticklabels([_format_numeric_tick(value) for value in x_values], fontsize=8)
+            _apply_axis_ticks(ax, mode, set(x_vals[np.isfinite(x_vals)]))
         else:
-            labels = metric_df["_axis_value"].astype(str).tolist()
-            x_values = np.arange(len(labels), dtype=float)
-
+            x_labels = (
+                metric_df["_x_label"].tolist()
+                if "_x_label" in metric_df.columns
+                else metric_df["name"].map(_clean_text).tolist()
+            )
+            x_pos = np.arange(len(x_labels), dtype=float)
             ax.errorbar(
-                x_values,
-                values,
-                yerr=np.vstack([lower_error, upper_error]),
+                x_pos, values,
+                yerr=np.vstack([lower_err, upper_err]),
                 fmt="o",
-                color="tab:blue",
-                ecolor="black",
-                elinewidth=1.0,
-                capsize=3,
-                markersize=4,
+                color="tab:blue", ecolor="black",
+                elinewidth=1.0, capsize=3, markersize=4,
                 label="Experiment values",
             )
-            ax.set_xticks(x_values)
-            ax.set_xticklabels(labels, rotation=35, ha="right", fontsize=8)
+            ax.set_xticks(x_pos)
+            ax.set_xticklabels(x_labels, rotation=35, ha="right", fontsize=8)
 
         if baseline_row is not None:
-            baseline_value = baseline_row.get(metric_key, np.nan)
-            baseline_low = baseline_row.get(low_key, np.nan)
-            baseline_high = baseline_row.get(high_key, np.nan)
-
-            if np.isfinite(baseline_value):
-                ax.axhline(
-                    baseline_value,
-                    color="tab:red",
-                    linewidth=1.2,
-                    linestyle="-",
-                    alpha=0.9,
-                    label="Baseline",
-                )
-            if np.isfinite(baseline_low):
-                ax.axhline(
-                    baseline_low,
-                    color="tab:red",
-                    linewidth=1.0,
-                    linestyle="--",
-                    alpha=0.8,
-                    label="Baseline CI low",
-                )
-            if np.isfinite(baseline_high):
-                ax.axhline(
-                    baseline_high,
-                    color="tab:red",
-                    linewidth=1.0,
-                    linestyle="--",
-                    alpha=0.8,
-                    label="Baseline CI high",
-                )
+            bv = baseline_row.get(metric_key, np.nan)
+            bl = baseline_row.get(low_key, np.nan)
+            bh = baseline_row.get(high_key, np.nan)
+            if np.isfinite(bv):
+                ax.axhline(bv, color="tab:red", linewidth=1.2, linestyle="-",
+                           alpha=0.9, label="Baseline")
+            if np.isfinite(bl):
+                ax.axhline(bl, color="tab:red", linewidth=1.0, linestyle="--",
+                           alpha=0.8, label="Baseline CI low")
+            if np.isfinite(bh):
+                ax.axhline(bh, color="tab:red", linewidth=1.0, linestyle="--",
+                           alpha=0.8, label="Baseline CI high")
 
         ax.set_title(metric_label, fontsize=10)
-        ax.set_xlabel(axis_label, fontsize=9)
+        ax.set_xlabel(x_label_str, fontsize=9)
         ax.set_ylabel(metric_label, fontsize=9)
         ax.grid(alpha=0.2)
         ax.tick_params(labelsize=8)
@@ -282,12 +279,9 @@ def _plot_chunk(group_df, metric_specs, group_title, baseline_row, chunk_index, 
     handles, labels = _unique_legend_entries(axes_flat)
     if handles:
         fig.legend(
-            handles,
-            labels,
-            loc="upper center",
-            bbox_to_anchor=(0.5, 0.965),
-            ncol=min(4, len(labels)),
-            fontsize=8,
+            handles, labels,
+            loc="upper center", bbox_to_anchor=(0.5, 0.965),
+            ncol=min(4, len(labels)), fontsize=8,
         )
 
     suffix = f" (part {chunk_index} of {chunk_count})" if chunk_count > 1 else ""
@@ -295,6 +289,8 @@ def _plot_chunk(group_df, metric_specs, group_title, baseline_row, chunk_index, 
     fig.tight_layout(rect=[0, 0, 1, 0.92 if handles else 0.96])
     plt.show()
 
+
+# ── public entry point ────────────────────────────────────────────────────────
 
 def plot_experiment_confidence_intervals(
     df,
@@ -307,9 +303,9 @@ def plot_experiment_confidence_intervals(
     if max_experiments_per_figure < 1:
         raise ValueError("`max_experiments_per_figure` must be at least 1.")
 
-    missing_group_cols = [column for column in group_cols if column not in df.columns]
-    if missing_group_cols:
-        raise RuntimeError(f"Dataframe missing required grouping columns: {missing_group_cols}")
+    missing = [c for c in group_cols if c not in df.columns]
+    if missing:
+        raise RuntimeError(f"Dataframe missing required grouping columns: {missing}")
     if "name" not in df.columns:
         raise RuntimeError("Dataframe missing required column: ['name']")
 
@@ -321,7 +317,7 @@ def plot_experiment_confidence_intervals(
     plot_df = df.drop_duplicates(subset=dedupe_cols, keep="last").copy()
 
     baseline_mask = _baseline_mask(plot_df)
-    baseline_lookup_cols = tuple(column for column in group_cols if column != "perturbation_family")
+    baseline_lookup_cols = tuple(c for c in group_cols if c != "perturbation_family")
     baseline_map = _build_baseline_reference_map(
         plot_df[baseline_mask].copy(),
         metric_specs=metric_specs,
@@ -329,8 +325,8 @@ def plot_experiment_confidence_intervals(
     )
 
     ci_mask = pd.Series(False, index=plot_df.index)
-    for metric_key, low_key, high_key, _ in metric_specs:
-        ci_mask |= plot_df[[metric_key, low_key, high_key]].notna().all(axis=1)
+    for mk, lk, hk, _ in metric_specs:
+        ci_mask |= plot_df[[mk, lk, hk]].notna().all(axis=1)
 
     ci_df = plot_df[ci_mask & ~baseline_mask].copy()
     if ci_df.empty:
@@ -338,28 +334,44 @@ def plot_experiment_confidence_intervals(
         return ci_df
 
     plotted_group_count = 0
+
     for group_key, group_df in ci_df.groupby(list(group_cols), dropna=False, sort=True):
         if not isinstance(group_key, tuple):
             group_key = (group_key,)
 
         group_title = _build_group_title(group_key, group_cols)
-        axis_col, _, axis_values = _pick_axis(group_df)
 
-        sorted_group_df = group_df.copy()
-        sorted_group_df["_axis_value_for_chunking"] = axis_values
-        is_numeric_axis = pd.api.types.is_numeric_dtype(sorted_group_df["_axis_value_for_chunking"])
-        sort_cols = ["_axis_value_for_chunking", "name"] if is_numeric_axis else ["_axis_value_for_chunking"]
-        sorted_group_df = (
-            sorted_group_df.sort_values(sort_cols, kind="stable")
-            .drop(columns=["_axis_value_for_chunking"])
+        # determine axis mode from perturbation_group if available, else from perturbation_family
+        if "perturbation_group" in group_df.columns:
+            mode = _axis_mode(group_df["perturbation_group"].dropna().unique())
+        else:
+            families = group_df["perturbation_family"].dropna().astype(str).unique()
+            if all(f == "sample_size" for f in families):
+                mode = "sample_size"
+            elif all(f.startswith("preprocessing") for f in families):
+                mode = "preprocessing"
+            else:
+                mode = "default"
+
+        sample_size_ref = (
+            _sample_size_reference(group_df["scale"])
+            if mode == "sample_size" and "scale" in group_df.columns
+            else 1280.0
         )
 
-        if axis_col == "sample_size_n":
-            chunked_frames = [sorted_group_df]
+        # sample_size uses log axis so all points are visible without chunking
+        if mode == "sample_size":
+            chunked_frames = [group_df]
         else:
-            chunked_frames = _chunk_frame(sorted_group_df, max_experiments_per_figure)
+            sorted_df = group_df.copy()
+            if "scale" in sorted_df.columns:
+                sorted_df = sorted_df.sort_values(["scale", "name"], kind="stable")
+            chunked_frames = _chunk_frame(sorted_df, max_experiments_per_figure)
 
-        baseline_key = _build_lookup_key(group_df.iloc[0], baseline_lookup_cols) if baseline_lookup_cols else ()
+        baseline_key = (
+            _build_lookup_key(group_df.iloc[0], baseline_lookup_cols)
+            if baseline_lookup_cols else ()
+        )
         baseline_row = baseline_map.get(baseline_key)
 
         for chunk_index, chunk_df in enumerate(chunked_frames, start=1):
@@ -370,12 +382,14 @@ def plot_experiment_confidence_intervals(
                 baseline_row=baseline_row,
                 chunk_index=chunk_index,
                 chunk_count=len(chunked_frames),
+                mode=mode,
+                sample_size_ref=sample_size_ref,
             )
 
         plotted_group_count += 1
 
     print(
-        "Plotted confidence intervals for "
-        f"{len(ci_df)} non-baseline experiment rows across {plotted_group_count} grouped plot set(s)."
+        f"Plotted confidence intervals for {len(ci_df)} non-baseline experiment rows "
+        f"across {plotted_group_count} grouped plot set(s)."
     )
     return ci_df

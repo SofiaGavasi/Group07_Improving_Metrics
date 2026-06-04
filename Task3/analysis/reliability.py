@@ -1,7 +1,12 @@
 """
-this file computes the reliability table for nuisance perturbations
+this file computes reliability scores for each metric
 
-it contains the part of the old notebook analysis that measured spread across sample size preprocessing and domain shift rows
+reliability is defined as the mean bootstrap CI width per metric across all experiments
+
+
+experiments where the ci columns are nan (bootstrapping was not run) are skipped
+per metric. the output is one row per metric with the mean ci width and the number
+of experiments that had valid ci data.
 """
 
 import numpy as np
@@ -13,53 +18,33 @@ from Task3.analysis.shared import METRICS
 def compute_reliability(analysis_df, metrics=None):
     metrics = metrics or METRICS
 
-    source = analysis_df[
-        analysis_df["perturbation_group"].astype(str).str.startswith("sample_size")
-        | analysis_df["perturbation_group"].astype(str).str.startswith("preprocessing::")
-        | analysis_df["perturbation_group"].astype(str).str.startswith("domain_shift::")
-    ].copy()
-
     rows = []
-    if source.empty:
-        return pd.DataFrame(rows)
+    for metric in metrics:
+        low_col = f"{metric}_ci_low"
+        high_col = f"{metric}_ci_high"
 
-    # I collapse all domain shift variants into one bucket (they are not really severities)
-    source["reliability_group"] = np.where(
-        source["perturbation_group"].astype(str).str.startswith("domain_shift::"),
-        "domain_shift",
-        source["perturbation_group"],
-    )
-
-    for group_name, group_df in source.groupby("reliability_group", dropna=False):
-        for metric in metrics:
-            values = group_df[f"{metric}_norm"].to_numpy(dtype=float)
-            values = values[np.isfinite(values)]
-
-            if values.size >= 2:
-                mean_value = float(np.mean(values))
-                std_value = float(np.std(values))
-                cv_value = abs(std_value / mean_value) if mean_value != 0 else np.nan
-                span_value = float(np.max(values) - np.min(values))
-            else:
-                mean_value = np.nan
-                std_value = np.nan
-                cv_value = np.nan
-                span_value = np.nan
-
+        if low_col not in analysis_df.columns or high_col not in analysis_df.columns:
             rows.append(
                 {
-                    "perturbation_group": group_name,
                     "metric": metric,
-                    "n_points": int(values.size),
-                    "mean_norm": mean_value,
-                    "std_norm": std_value,
-                    "cv_norm": cv_value,
-                    "span_norm": span_value,
+                    "mean_ci_width": np.nan,
+                    "n_experiments": 0,
                 }
             )
+            continue
 
-    frame = pd.DataFrame(rows)
-    if frame.empty:
-        return frame
+        low_values = pd.to_numeric(analysis_df[low_col], errors="coerce")
+        high_values = pd.to_numeric(analysis_df[high_col], errors="coerce")
+        widths = high_values - low_values
 
-    return frame[frame["n_points"] >= 2].copy()
+        valid_widths = widths[np.isfinite(widths)]
+
+        rows.append(
+            {
+                "metric": metric,
+                "mean_ci_width": float(valid_widths.mean()) if valid_widths.size > 0 else np.nan,
+                "n_experiments": int(valid_widths.size),
+            }
+        )
+
+    return pd.DataFrame(rows)

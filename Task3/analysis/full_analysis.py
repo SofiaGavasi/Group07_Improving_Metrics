@@ -26,6 +26,13 @@ from Task3.analysis.reliability import compute_reliability
 from Task3.analysis.sensitivity import compute_sensitivity
 from Task3.analysis.specificity import compute_specificity
 
+from Task3.analysis.plot_components import (
+    plot_monotonicity_heatmap,
+    plot_sensitivity_bars,
+    plot_reliability_bars,
+    plot_specificity_heatmap,
+)
+
 
 def _get_plt():
     import matplotlib.pyplot as plt
@@ -470,69 +477,6 @@ def _plot_domain_shift_panels(domain_shift_df, experiments_df=None):
     plt.show()
 
 
-def _plot_value_heatmap(frame, value_column, title, cmap, colorbar_label, vmin=None, vmax=None):
-    plt = _get_plt()
-
-    pivot = frame.pivot(index="perturbation_group", columns="metric", values=value_column).reindex(columns=METRICS)
-    fig, ax = plt.subplots(figsize=(12, max(3, 0.34 * len(pivot) + 2)))
-
-    image = ax.imshow(pivot.fillna(0).to_numpy(), aspect="auto", cmap=cmap, vmin=vmin, vmax=vmax)
-    ax.set_title(title)
-    ax.set_xticks(np.arange(len(METRICS)))
-    ax.set_xticklabels([METRIC_LABELS[metric] for metric in METRICS], rotation=30, ha="right")
-    ax.set_yticks(np.arange(len(pivot.index)))
-    ax.set_yticklabels(pivot.index)
-
-    for row_index in range(pivot.shape[0]):
-        for col_index in range(pivot.shape[1]):
-            value = pivot.iloc[row_index, col_index]
-            text = "NA" if not np.isfinite(value) else f"{value:.2f}"
-            ax.text(col_index, row_index, text, ha="center", va="center", fontsize=7)
-
-    plt.colorbar(image, ax=ax, fraction=0.025, pad=0.02, label=colorbar_label)
-    plt.tight_layout()
-    plt.show()
-
-
-def _plot_specificity_heatmap(specificity):
-    plt = _get_plt()
-
-    pivot = specificity.pivot(
-        index="perturbation_group",
-        columns="metric",
-        values="off_target_max_abs_norm",
-    ).reindex(columns=METRICS)
-
-    fig, ax = plt.subplots(figsize=(12, max(3, 0.34 * len(pivot) + 2)))
-    image = ax.imshow(pivot.fillna(0).to_numpy(), aspect="auto", cmap="Blues")
-
-    ax.set_title("Specificity: off-target max |normalized change| (lower is better)")
-    ax.set_xticks(np.arange(len(METRICS)))
-    ax.set_xticklabels([METRIC_LABELS[metric] for metric in METRICS], rotation=30, ha="right")
-    ax.set_yticks(np.arange(len(pivot.index)))
-    ax.set_yticklabels(pivot.index)
-
-    for row_index in range(pivot.shape[0]):
-        for col_index, metric in enumerate(METRICS):
-            group_name = pivot.index[row_index]
-            value = pivot.iloc[row_index, col_index]
-            kind = specificity[
-                (specificity["perturbation_group"] == group_name)
-                & (specificity["metric"] == metric)
-            ]["specificity_kind"]
-            kind = kind.iloc[0] if len(kind) else ""
-
-            if kind == "primary_metric":
-                text = "P"
-            else:
-                text = "NA" if not np.isfinite(value) else f"{value:.2f}"
-
-            ax.text(col_index, row_index, text, ha="center", va="center", fontsize=7)
-
-    plt.colorbar(image, ax=ax, fraction=0.025, pad=0.02, label="off-target max |norm change|")
-    plt.tight_layout()
-    plt.show()
-
 
 def _show_table_head(title, frame):
     print(title)
@@ -780,36 +724,15 @@ def run_full_perturbation_analysis(df, show_plots=True, show_tables=True, verbos
 
         _plot_domain_shift_panels(prepared["domain_shift_df"], experiments_df=prepared["experiments"])
 
-        _plot_value_heatmap(
-            monotonicity,
-            value_column="rho_spearman",
-            title="Monotonic Assos: Spearman rho (scale vs normalized metric)",
-            cmap="coolwarm",
-            colorbar_label="rho",
-            vmin=-1,
-            vmax=1,
-        )
+        plot_monotonicity_heatmap(monotonicity)
+        plot_sensitivity_bars(sensitivity)
 
-        _plot_value_heatmap(
-            sensitivity,
-            value_column="max_abs_norm_change",
-            title="Sensitivity: max |normalized change|",
-            cmap="YlOrRd",
-            colorbar_label="max |norm change|",
-        )
-
-        if reliability.empty:
-            print("Reliability: no sample-size, preprocessing, or domain-shift rows found.")
+        if reliability.empty or reliability["n_experiments"].sum() == 0:
+            print("Reliability: no bootstrap CI data found in this batch.")
         else:
-            _plot_value_heatmap(
-                reliability,
-                value_column="span_norm",
-                title="Reliability: span of normalized response (sample-size, preprocessing, domain-shift)",
-                cmap="PuBuGn",
-                colorbar_label="max-min norm change",
-            )
+            plot_reliability_bars(reliability)
 
-        _plot_specificity_heatmap(specificity)
+        plot_specificity_heatmap(specificity)
 
     if verbose:
         print("Perturbation groups included in curve analysis:")
