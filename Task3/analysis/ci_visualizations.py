@@ -1,7 +1,6 @@
 """
 this file plots experiment level confidence intervals from the parsed batch table
 
-
 """
 
 import math
@@ -81,8 +80,6 @@ def _apply_axis_ticks(ax, mode, tick_values):
     if not tick_values_sorted:
         return
     if mode == "sample_size":
-        ax.set_xscale("log")
-        ax.set_xlim(tick_values_sorted[0] * 0.9, tick_values_sorted[-1] * 1.05)
         rotation, alignment, fontsize = 35, "right", 6.5
     else:
         rotation, alignment, fontsize = 0, "center", 7
@@ -313,11 +310,22 @@ def plot_experiment_confidence_intervals(
     if not metric_specs:
         raise RuntimeError("No metric CI columns were found in the dataframe.")
 
-    dedupe_cols = list(group_cols) + ["name"]
+    # always sub-group by perturbation_group if available, to get specific titles
+    # (e.g. "preprocessing::resize" instead of just "preprocessing")
+    has_pg = "perturbation_group" in df.columns
+    effective_group_cols = list(group_cols)
+    if has_pg and "perturbation_group" not in effective_group_cols:
+        effective_group_cols = effective_group_cols + ["perturbation_group"]
+
+    dedupe_cols = effective_group_cols + ["name"]
     plot_df = df.drop_duplicates(subset=dedupe_cols, keep="last").copy()
 
     baseline_mask = _baseline_mask(plot_df)
-    baseline_lookup_cols = tuple(c for c in group_cols if c != "perturbation_family")
+    # baseline lookup excludes perturbation_family and perturbation_group
+    baseline_lookup_cols = tuple(
+        c for c in effective_group_cols
+        if c not in ("perturbation_family", "perturbation_group")
+    )
     baseline_map = _build_baseline_reference_map(
         plot_df[baseline_mask].copy(),
         metric_specs=metric_specs,
@@ -335,14 +343,15 @@ def plot_experiment_confidence_intervals(
 
     plotted_group_count = 0
 
-    for group_key, group_df in ci_df.groupby(list(group_cols), dropna=False, sort=True):
+    for group_key, group_df in ci_df.groupby(effective_group_cols, dropna=False, sort=True):
         if not isinstance(group_key, tuple):
             group_key = (group_key,)
 
-        group_title = _build_group_title(group_key, group_cols)
+        group_title = _build_group_title(group_key, effective_group_cols)
 
-        # determine axis mode from perturbation_group if available, else from perturbation_family
-        if "perturbation_group" in group_df.columns:
+        # infer mode directly from perturbation_group values in this group,
+        # falling back to perturbation_family if the column is absent
+        if has_pg:
             mode = _axis_mode(group_df["perturbation_group"].dropna().unique())
         else:
             families = group_df["perturbation_family"].dropna().astype(str).unique()
@@ -359,7 +368,7 @@ def plot_experiment_confidence_intervals(
             else 1280.0
         )
 
-        # sample_size uses log axis so all points are visible without chunking
+        # sample_size: never chunk — log axis shows all points
         if mode == "sample_size":
             chunked_frames = [group_df]
         else:
