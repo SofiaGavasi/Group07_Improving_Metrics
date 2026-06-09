@@ -1,5 +1,5 @@
 """
-this file computes sensitivity scores for each metric
+this file computes sensitivity scores for each perturbation group and metric
 
 sensitivity measures how strongly each metric responds to perturbations it is
 intended to detect. following eq. 5 of the task3 report, only rows belonging to
@@ -23,9 +23,9 @@ TARGET_PREFIXES = {
     "kid_mean":  ["degradation_", "memoisation"],
     "is_mean":   ["class_removal", "class_imbalance"],
     "precision": ["degradation_", "memoisation"],
-    "recall":    ["class_removal", "class_imbalance"],
+    "recall":    ["class_removal", "class_imbalance", "memoisation"],
     "density":   ["degradation_", "memoisation"],
-    "coverage":  ["class_removal", "class_imbalance"],
+    "coverage":  ["class_removal", "class_imbalance", "memoisation"],
 }
 
 
@@ -35,27 +35,61 @@ def _is_on_target(group_label, prefixes):
 
 
 def compute_sensitivity(curve_df, metrics=None):
+    """
+    Returns one row per (perturbation_group, metric).
+    For on-target (group, metric) pairs: mean and max |norm change| are filled.
+    For off-target pairs: values are nan (mirrors specificity table structure).
+    sensitivity_kind column marks 'on_target' or 'off_target'.
+    """
     metrics = metrics or METRICS
+    groups = sorted(curve_df["perturbation_group"].dropna().astype(str).unique())
     rows = []
 
-    for metric in metrics:
-        prefixes = TARGET_PREFIXES.get(metric, [])
+    for group_name in groups:
+        group_df = curve_df[curve_df["perturbation_group"] == group_name]
 
-        on_target_mask = curve_df["perturbation_group"].apply(
-            lambda group: _is_on_target(group, prefixes)
-        )
-        on_target_df = curve_df[on_target_mask]
+        for metric in metrics:
+            prefixes = TARGET_PREFIXES.get(metric, [])
+            on_target = _is_on_target(group_name, prefixes)
 
-        values = on_target_df[f"{metric}_norm"].to_numpy(dtype=float)
-        values = values[np.isfinite(values)]
+            if not on_target:
+                rows.append({
+                    "perturbation_group": group_name,
+                    "metric": metric,
+                    "mean_abs_norm_change": np.nan,
+                    "max_abs_norm_change": np.nan,
+                    "sensitivity_kind": "off_target",
+                })
+                continue
 
-        rows.append(
-            {
+            values = group_df[f"{metric}_norm"].to_numpy(dtype=float)
+            values = values[np.isfinite(values)]
+
+            rows.append({
+                "perturbation_group": group_name,
                 "metric": metric,
-                "max_abs_norm_change": float(np.max(np.abs(values))) if values.size else np.nan,
                 "mean_abs_norm_change": float(np.mean(np.abs(values))) if values.size else np.nan,
-                "n_on_target_rows": int(values.size),
-            }
-        )
+                "max_abs_norm_change": float(np.max(np.abs(values))) if values.size else np.nan,
+                "sensitivity_kind": "on_target",
+            })
 
+    return pd.DataFrame(rows)
+
+
+def compute_sensitivity_summary(sensitivity_df):
+    """
+    Aggregates the per-group sensitivity table into one row per metric
+    (mean of on-target rows only), for use in rwfas weight computation.
+    """
+    on_target = sensitivity_df[sensitivity_df["sensitivity_kind"] == "on_target"]
+    rows = []
+    for metric in METRICS:
+        metric_df = on_target[on_target["metric"] == metric]
+        values = metric_df["mean_abs_norm_change"].dropna().to_numpy(dtype=float)
+        rows.append({
+            "metric": metric,
+            "mean_abs_norm_change": float(np.mean(values)) if values.size else np.nan,
+            "max_abs_norm_change": float(np.max(values)) if values.size else np.nan,
+            "n_on_target_rows": int(values.size),
+        })
     return pd.DataFrame(rows)

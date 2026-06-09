@@ -7,7 +7,6 @@ from .data.io import find_report_files, get_repo_and_outputs_root
 from .data.parsing import load_batch_dataframe
 from .pipelines.aggregate_rwfas_across_seeds import aggregate_rwfas_across_seeds
 from .pipelines.collect_all_scores import collect_all_scores, prepare_full_analysis_input
-from .pipelines.merge_raw_metrics_across_seeds import merge_raw_metrics_across_seeds
 from .scoring.rwfas import METRICS, RWFAS, ensure_norm_columns
 
 __all__ = [
@@ -25,6 +24,5 @@ __all__ = [
     'ensure_norm_columns',
     'collect_all_scores',
     'prepare_full_analysis_input',
-    'merge_raw_metrics_across_seeds',
     'aggregate_rwfas_across_seeds',
 ]

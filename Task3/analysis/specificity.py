@@ -16,8 +16,8 @@ PRIMARY_METRICS_BY_FAMILY = {
     "degradation_jpeg": {"fid", "kid_mean", "precision", "density"},
     "degradation_all": {"fid", "kid_mean", "precision", "density"},
     "memoisation": {"fid", "kid_mean", "precision", "density", "recall", "coverage"},
-    "class_removal": {"recall", "coverage"},
-    "class_imbalance": {"recall", "coverage"},
+    "class_removal":   {"recall", "coverage", "is_mean"},
+    "class_imbalance": {"recall", "coverage", "is_mean"},
     "sample_size": set(),
     "preprocessing": set(),
     "domain_shift": {"fid", "kid_mean", "is_mean", "precision", "recall", "density", "coverage"},
@@ -57,12 +57,16 @@ def compute_specificity(curve_df, perturbation_groups=None, metrics=None):
 
         for metric in metrics:
             if metric in primary_metrics:
+                # on-target: compute mean abs norm for use in ratio-based specificity
+                values = group_df[f"{metric}_norm"].to_numpy(dtype=float)
+                values = values[np.isfinite(values)]
                 rows.append(
                     {
                         "perturbation_group": group_name,
                         "metric": metric,
-                        "off_target_max_abs_norm": 0.0,
-                        "off_target_mean_abs_norm": 0.0,
+                        "on_target_mean_abs_norm": float(np.mean(np.abs(values))) if values.size else np.nan,
+                        "off_target_max_abs_norm": np.nan,
+                        "off_target_mean_abs_norm": np.nan,
                         "specificity_kind": "primary_metric",
                     }
                 )
@@ -76,6 +80,7 @@ def compute_specificity(curve_df, perturbation_groups=None, metrics=None):
                     {
                         "perturbation_group": group_name,
                         "metric": metric,
+                        "on_target_mean_abs_norm": np.nan,
                         "off_target_max_abs_norm": float(np.max(np.abs(values))),
                         "off_target_mean_abs_norm": float(np.mean(np.abs(values))),
                         "specificity_kind": "off_target",
@@ -86,6 +91,7 @@ def compute_specificity(curve_df, perturbation_groups=None, metrics=None):
                     {
                         "perturbation_group": group_name,
                         "metric": metric,
+                        "on_target_mean_abs_norm": np.nan,
                         "off_target_max_abs_norm": np.nan,
                         "off_target_mean_abs_norm": np.nan,
                         "specificity_kind": "missing_metric_data",

@@ -6,6 +6,7 @@ it prepares the shared tables calls the split metric modules draws the plots and
 
 import json
 
+from Task3.analysis import sensitivity
 import numpy as np
 import pandas as pd
 
@@ -31,6 +32,8 @@ from Task3.analysis.plot_components import (
     plot_sensitivity_bars,
     plot_reliability_bars,
     plot_specificity_heatmap,
+    plot_trustworthiness_scores, 
+     plot_sensitivity_heatmap,
 )
 
 
@@ -712,7 +715,8 @@ def run_full_perturbation_analysis(df, show_plots=True, show_tables=True, verbos
 
     monotonicity = compute_monotonicity(prepared["curve_agg"])
     sensitivity = compute_sensitivity(prepared["curve_df"])
-    reliability = compute_reliability(prepared["analysis_df"])
+    print([c for c in prepared["analysis_df"].columns if "ci" in c])
+    reliability = compute_reliability(prepared["experiments"])
     specificity = compute_specificity(prepared["curve_df"], prepared["perturbation_groups"])
 
     if show_plots:
@@ -726,6 +730,8 @@ def run_full_perturbation_analysis(df, show_plots=True, show_tables=True, verbos
 
         plot_monotonicity_heatmap(monotonicity)
         plot_sensitivity_bars(sensitivity)
+        plot_sensitivity_heatmap(sensitivity)
+        plot_sensitivity_bars(sensitivity)
 
         if reliability.empty or reliability["n_experiments"].sum() == 0:
             print("Reliability: no bootstrap CI data found in this batch.")
@@ -733,6 +739,9 @@ def run_full_perturbation_analysis(df, show_plots=True, show_tables=True, verbos
             plot_reliability_bars(reliability)
 
         plot_specificity_heatmap(specificity)
+
+        plot_trustworthiness_scores(sensitivity, specificity, monotonicity, reliability)
+
 
     if verbose:
         print("Perturbation groups included in curve analysis:")
@@ -785,7 +794,7 @@ def run_full_perturbation_analysis(df, show_plots=True, show_tables=True, verbos
         )
         _show_table_head(
             "Reliability (head):",
-            reliability.sort_values(["perturbation_group", "metric"]).head(40) if not reliability.empty else pd.DataFrame(),
+            reliability.sort_values("metric") if not reliability.empty else pd.DataFrame(),
         )
         _show_table_head(
             "Specificity (head):",

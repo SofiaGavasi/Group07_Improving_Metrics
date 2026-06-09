@@ -84,9 +84,13 @@ def add_normalized_metric_columns(frame):
     for metric in METRICS:
         baseline_values = merged[f"{metric}_baseline"]
         raw_delta = merged[metric] - baseline_values
+        # epsilon=0.1 is added to the denominator for numerical stability,
+        # consistent with the floor used in the raw weight computation.
+        # this prevents instability when the baseline is close to zero (e.g. KID).
+        EPSILON = 0.1
         relative_delta = np.where(
-            np.isfinite(baseline_values) & (baseline_values != 0),
-            raw_delta / np.abs(baseline_values),
+            np.isfinite(baseline_values),
+            raw_delta / (np.abs(baseline_values) + EPSILON),
             np.nan,
         )
         merged[f"{metric}_norm"] = relative_delta if metric in LOWER_BETTER else -relative_delta

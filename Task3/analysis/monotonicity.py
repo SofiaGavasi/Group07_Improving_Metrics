@@ -28,11 +28,18 @@ def compute_monotonicity(curve_agg, metrics=None):
             else:
                 rho, p_value = np.nan, np.nan
 
+            # rho_spearman is the signed correlation: positive means the metric
+            # moves in the expected direction (increasing deterioration with
+            # increasing severity), negative means wrong direction.
+            # clipped_rho clips to [0, 1] so wrong-direction responses are
+            # penalised rather than rewarded. abs_rho is kept for reference only.
+            clipped_rho = float(np.clip(rho, 0.0, 1.0)) if np.isfinite(rho) else np.nan
             rows.append(
                 {
                     "perturbation_group": group_name,
                     "metric": metric,
                     "rho_spearman": float(rho) if np.isfinite(rho) else np.nan,
+                    "clipped_rho": clipped_rho,
                     "p_value": float(p_value) if np.isfinite(p_value) else np.nan,
                     "abs_rho": abs(float(rho)) if np.isfinite(rho) else np.nan,
                 }

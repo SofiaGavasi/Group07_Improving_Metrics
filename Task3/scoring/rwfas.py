@@ -40,13 +40,13 @@ except ImportError:
 METRICS = ['fid', 'kid_mean', 'is_mean', 'precision', 'recall', 'density', 'coverage']
 
 TARGET_PREFIXES = {
-    'fid': ['degradation_', 'memoisation'],
-    'kid_mean': ['degradation_', 'memoisation'],
-    'is_mean': ['class_removal', 'class_imbalance'],
+    'fid':       ['degradation_', 'memoisation'],
+    'kid_mean':  ['degradation_', 'memoisation'],
+    'is_mean':   ['class_removal', 'class_imbalance'],
     'precision': ['degradation_', 'memoisation'],
-    'density': ['degradation_', 'memoisation'],
-    'recall': ['class_removal', 'class_imbalance'],
-    'coverage': ['class_removal', 'class_imbalance'],
+    'density':   ['degradation_', 'memoisation'],
+    'recall':    ['class_removal', 'class_imbalance', 'memoisation'],
+    'coverage':  ['class_removal', 'class_imbalance', 'memoisation'],
 }
 
 LOWER_BETTER = {'fid', 'kid_mean'}
@@ -182,9 +182,12 @@ def ensure_norm_columns(df_delta):
 
         if norm_col not in frame.columns:
             base_vals = _to_numeric(frame[base_col]).to_numpy(dtype=float)
+            # epsilon=0.1 matches the floor used in raw weight computation
+            # and prevents instability for near-zero baselines (e.g. KID)
+            EPSILON = 0.1
             rel_delta = np.where(
-                np.isfinite(base_vals) & (base_vals != 0),
-                raw_delta / np.abs(base_vals),
+                np.isfinite(base_vals),
+                raw_delta / (np.abs(base_vals) + EPSILON),
                 np.nan,
             )
             frame[norm_col] = rel_delta if metric in LOWER_BETTER else -rel_delta
@@ -200,7 +203,7 @@ class RWFAS:
         self._df_delta_ref = None
 
     def fit(self, df_delta, monotonicity, sensitivity, specificity, robustness, batch_label='unknown_batch'):
-        del robustness
+        reliability_table = robustness  # robustness is the reliability table
 
         prepared = ensure_norm_columns(df_delta)
 
@@ -219,21 +222,36 @@ class RWFAS:
                 sensitivity_raw[metric] = float(np.clip(np.mean(values), 0.0, np.inf))
         sensitivity_norm = _minmax_normalize(sensitivity_raw, equal_value=0.5)
 
-        specificity_raw = {}
         specificity_scores = {}
+        EPSILON = 0.1
         for metric in METRICS:
             prefixes = TARGET_PREFIXES.get(metric, [])
-            subset = specificity[
+
+            # on-target mean abs drift for this metric
+            on_target_rows = specificity[
+                (specificity['metric'] == metric)
+                & (specificity['specificity_kind'] == 'primary_metric')
+                & specificity['perturbation_group'].astype(str).map(lambda value: _starts_with_any(value, prefixes))
+            ]
+            d_on = _mean_finite(_to_numeric(on_target_rows.get('on_target_mean_abs_norm', pd.Series(dtype=float))).to_numpy(dtype=float))
+
+            # off-target mean abs drift for this metric
+            off_target_rows = specificity[
                 (specificity['metric'] == metric)
                 & (specificity['specificity_kind'] == 'off_target')
                 & ~specificity['perturbation_group'].astype(str).map(lambda value: _starts_with_any(value, prefixes))
             ]
-            specificity_raw[metric] = _mean_finite(_to_numeric(subset['off_target_mean_abs_norm']).to_numpy(dtype=float))
-        specificity_norm = _minmax_normalize(specificity_raw, equal_value=0.5)
-        for metric in METRICS:
-            if np.isfinite(specificity_raw[metric]) and np.isfinite(specificity_norm[metric]):
-                specificity_scores[metric] = float(1.0 - specificity_norm[metric])
+            d_off = _mean_finite(_to_numeric(off_target_rows['off_target_mean_abs_norm']).to_numpy(dtype=float))
+
+            if np.isfinite(d_on) and np.isfinite(d_off):
+                # ratio-based: specificity = 1 - d_off / (d_on + d_off + eps)
+                # a metric must respond more on-target than off-target to score well
+                specificity_scores[metric] = float(1.0 - d_off / (d_on + d_off + EPSILON))
+            elif np.isfinite(d_off):
+                # no on-target data: fall back to penalising off-target drift alone
+                specificity_scores[metric] = float(1.0 / (1.0 + d_off))
             else:
+                # no off-target rows: default to perfect specificity
                 specificity_scores[metric] = 1.0
 
         monotonicity_scores = {}
@@ -243,20 +261,36 @@ class RWFAS:
                 (monotonicity['metric'] == metric)
                 & monotonicity['perturbation_group'].astype(str).map(lambda value: _starts_with_any(value, prefixes))
             ]
-            value = _mean_finite(_to_numeric(subset['abs_rho']).to_numpy(dtype=float))
+            # use clipped_rho (signed, clipped to [0,1]) if available,
+            # otherwise fall back to abs_rho for backward compatibility
+            if 'clipped_rho' in subset.columns:
+                value = _mean_finite(_to_numeric(subset['clipped_rho']).to_numpy(dtype=float))
+            else:
+                value = _mean_finite(_to_numeric(subset['abs_rho']).to_numpy(dtype=float))
             monotonicity_scores[metric] = float(np.clip(value, 0.0, 1.0)) if np.isfinite(value) else 0.0
 
+        # read relative CI widths directly from the reliability table to ensure
+        # consistency with plot_components.py, which also reads from this table.
+        # this avoids recomputing baseline normalisation here with a potentially
+        # different baseline row set.
         reliability_raw = {}
         reliability_scores = {}
+        w_col = 'mean_relative_ci_width' if 'mean_relative_ci_width' in reliability_table.columns else 'mean_ci_width'
         for metric in METRICS:
-            reliability_raw[metric] = _mean_ci_width(prepared, metric)
+            row = reliability_table[reliability_table['metric'] == metric]
+            if not row.empty:
+                val = pd.to_numeric(row[w_col].iloc[0], errors='coerce')
+                reliability_raw[metric] = float(val) if np.isfinite(val) else np.nan
+            else:
+                reliability_raw[metric] = np.nan
         reliability_norm = _minmax_normalize(reliability_raw, equal_value=0.5)
         for metric in METRICS:
-            if np.isfinite(reliability_raw[metric]) and np.isfinite(reliability_norm[metric]):
+            if np.isfinite(reliability_raw.get(metric, np.nan)) and np.isfinite(reliability_norm.get(metric, np.nan)):
                 reliability_scores[metric] = float(1.0 - reliability_norm[metric])
             else:
                 reliability_scores[metric] = 0.5
 
+        EPSILON = 0.1
         raw_weights = {}
         for metric in METRICS:
             values = [
@@ -266,7 +300,8 @@ class RWFAS:
                 reliability_scores.get(metric, np.nan),
             ]
             if all(np.isfinite(value) for value in values):
-                raw_weights[metric] = float(np.prod(values))
+                floored = [max(float(v), EPSILON) for v in values]
+                raw_weights[metric] = float(np.prod(floored))
             else:
                 raw_weights[metric] = np.nan
 
@@ -324,15 +359,16 @@ class RWFAS:
 
         self.weights_ = final_weights
         self.components_ = {}
+        EPSILON = 0.1
         for metric in METRICS:
             self.components_[metric] = {
-                'sensitivity': sensitivity_norm.get(metric, np.nan),
-                'specificity': specificity_scores.get(metric, np.nan),
-                'monotonicity': monotonicity_scores.get(metric, np.nan),
-                'reliability': reliability_scores.get(metric, np.nan),
-                'raw_weight': raw_weights.get(metric, np.nan),
+                'sensitivity':        max(sensitivity_norm.get(metric, np.nan), EPSILON),
+                'specificity':        max(specificity_scores.get(metric, np.nan), EPSILON),
+                'monotonicity':       max(monotonicity_scores.get(metric, np.nan), EPSILON),
+                'reliability':        max(reliability_scores.get(metric, np.nan), EPSILON),
+                'raw_weight':         raw_weights.get(metric, np.nan),
                 'redundancy_penalty': redundancy_penalties.get(metric, np.nan),
-                'final_weight': final_weights.get(metric, np.nan),
+                'final_weight':       final_weights.get(metric, np.nan),
             }
 
         self.batch_label_ = str(batch_label)
@@ -355,14 +391,39 @@ class RWFAS:
         component_scores = {}
         ci_widths = {}
 
+        MEMOISATION_PREFIX = 'memoisation'
+
         for metric in METRICS:
             norm_col = f'{metric}_norm'
-            values = _to_numeric(subset[norm_col]).to_numpy(dtype=float) if norm_col in subset.columns else np.array([], dtype=float)
-            values = values[np.isfinite(values)]
+
+            if norm_col in subset.columns:
+                metric_subset = subset.copy()
+                # excluding memoisation rows from goodness score: memoisation arificially improves fidelity metrics, which would reward
+                # a degenerate generator. memoisation is interpreted diagnostically via the failure mode chart instead.
+                memo_mask = metric_subset['perturbation_group'].astype(str).str.startswith(MEMOISATION_PREFIX)
+                metric_subset = metric_subset[~memo_mask]
+
+                # two-level averaging: first average within each perturbation family, then average across families. 
+                # this prevents families with more severity levels (e.g. class_imbalance) from dominating.
+                if 'perturbation_group' in metric_subset.columns and not metric_subset.empty:
+                    family_means = (
+                        metric_subset
+                        .groupby('perturbation_group', dropna=True)[norm_col]
+                        .apply(lambda x: pd.to_numeric(x, errors='coerce').dropna().mean())
+                        .dropna()
+                    )
+                    values = family_means.to_numpy(dtype=float)
+                    values = values[np.isfinite(values)]
+                else:
+                    values = _to_numeric(metric_subset[norm_col]).to_numpy(dtype=float)
+                    values = values[np.isfinite(values)]
+            else:
+                values = np.array([], dtype=float)
+
             if values.size:
-                clipped = np.clip(values, -1.0, 1.0)
-                component_norm[metric] = float(np.mean(clipped))
-                component_scores[metric] = float(0.5 - 0.5 * component_norm[metric])
+                clipped = np.clip(float(np.mean(values)), -1.0, 1.0)
+                component_norm[metric] = clipped
+                component_scores[metric] = float(0.5 - 0.5 * clipped)
             else:
                 component_norm[metric] = np.nan
                 component_scores[metric] = np.nan
