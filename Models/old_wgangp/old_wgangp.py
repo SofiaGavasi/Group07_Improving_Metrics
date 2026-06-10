@@ -1,3 +1,4 @@
+# old code, unintegrated , the new wgangp is the one used and integrated into the pipeline
 ## THIS CODE WAS DERIVED FROM https://github.com/EmilienDupont/wgan-gp.git
 ## Since the github was very old (9 years ago), small changes had to be made to keep it up to date
 

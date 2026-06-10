@@ -1,3 +1,4 @@
+# Old code, the train_wgangp is the one integrated into the pipeline
 #  This code was derived from https://github.com/EmilienDupont/wgan-gp.git 
 # Small changes had to be made since the repository was very old (and very old version) and some lines had to be updated
 
